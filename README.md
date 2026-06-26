@@ -78,13 +78,12 @@ judgment/
 ```bash
 git clone https://github.com/pearthink123/judgment.git
 cd judgment
-pip install -e .
+pip install -e ".[dashboard]"   # base + Streamlit + pandas + matplotlib
 
 # Run demo (no API key needed)
 python examples/coding_agent_demo.py
 
 # Launch dashboard
-pip install -e ".[dashboard]"
 streamlit run dashboard/app.py
 
 # Run CLI
