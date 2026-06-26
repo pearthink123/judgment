@@ -33,4 +33,4 @@ all = [
 judgment = "cli.main:main"
 
 [tool.setuptools.packages.find]
-include = ["core*", "harness*", "cli*", "dashboard*", "examples*"]
+include = ["core*", "harness*", "integration*", "cli*", "dashboard*", "examples*"]

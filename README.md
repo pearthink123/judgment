@@ -46,10 +46,16 @@ judgment/
 │   ├── corrective.py      # Heuristic corrective action router (4 rules)
 │   ├── training.py        # Baum-Welch EM for HMM parameter learning
 │   └── diagnostics.py     # Structured diagnostic outputs
+├── integration/
+│   ├── base.py            # Abstract adapter protocol
+│   └── langgraph.py       # LangGraph node + conditional-edge router
 ├── harness/
 │   ├── loop.py            # JudgmentHarness: unified execution loop
 │   ├── executor.py        # LLMExecutor (OpenAI-compat) + SimulatedExecutor
 │   └── tools.py           # ToolRegistry with built-in tools
+├── examples/
+│   ├── coding_agent_demo.py
+│   └── langgraph_agent.py # LangGraph-style agent with judgment oversight
 ├── cli/
 │   └── main.py            # CLI: judgment run / train / dashboard
 ├── dashboard/
@@ -58,7 +64,7 @@ judgment/
 │   ├── architecture-redesign.md
 │   ├── hawkes-redesign.md
 │   └── three-gaps-design.md
-├── tests/                 # 89 tests, all passing
+├── tests/                 # 107 tests, all passing
 ├── pyproject.toml
 └── README.md
 ```
@@ -134,6 +140,37 @@ print(decision.action)  # "continue"
 from judgment import train_hmm
 hmm = train_hmm(logs)  # logs: list of trajectories
 ```
+
+## LangGraph Integration
+
+Drop judgment oversight into an existing LangGraph agent without restructuring your graph:
+
+```python
+from judgment.integration.langgraph import (
+    create_judgment_node, create_judgment_router,
+)
+from judgment import DecisionEngine
+
+engine = DecisionEngine()
+
+graph = StateGraph(MyState)
+graph.add_node("agent", my_agent_node)
+graph.add_node("tools", my_tool_node)
+graph.add_node("human", my_human_node)
+graph.add_node("judgment", create_judgment_node(engine))
+
+# After each tool execution, check health
+graph.add_edge("tools", "judgment")
+
+# judgment routes back to agent, tools, or human based on engine output
+graph.add_conditional_edges(
+    "judgment",
+    create_judgment_router(engine),
+    {"agent": "agent", "tools": "tools", "human": "human"},
+)
+```
+
+See `examples/langgraph_agent.py` for a complete runnable example (no LangGraph install required).
 
 ## What This Is Not
 
