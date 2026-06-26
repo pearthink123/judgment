@@ -35,13 +35,19 @@ N_STATES: int = 3
 #   dim 1: progress      (3 cats: neg, zero, pos)
 #   dim 2: user_msg      (2 cats: silent, msg)
 #   dim 3: error_trend   (2 cats: stable, rising)
+#   dim 4: length_z      (3 cats: low, normal, high)          [content signal]
+#   dim 5: token_novelty (3 cats: repetitive, normal, fresh)   [content signal]
+#   dim 6: negation      (2 cats: normal, elevated)            [content signal]
 # ---------------------------------------------------------------------------
 DIM_TOOL = 0
 DIM_PROGRESS = 1
 DIM_USER = 2
 DIM_ERROR = 3
+DIM_LENGTH = 4
+DIM_NOVELTY = 5
+DIM_NEGATION = 6
 
-N_DIMS: int = 4
+N_DIMS: int = 7  # 4 structural + 3 content
 
 # ---------------------------------------------------------------------------
 # Default parameters
@@ -91,11 +97,38 @@ EMISSION_ERROR = np.array([
     [0.20, 0.80],   # Broken
 ], dtype=np.float64)
 
+# ---- Content-quality emission tables (dims 4–6) ----
+# These are mild priors — intended to be refined by Baum-Welch from real logs.
+
+# Dim 4: length z-score — P(low | s), P(normal | s), P(high | s)
+EMISSION_LENGTH = np.array([
+    [0.10, 0.80, 0.10],   # Healthy
+    [0.20, 0.65, 0.15],   # Degraded
+    [0.25, 0.50, 0.25],   # Broken
+], dtype=np.float64)
+
+# Dim 5: token novelty — P(repetitive | s), P(normal | s), P(fresh | s)
+EMISSION_NOVELTY = np.array([
+    [0.05, 0.85, 0.10],   # Healthy
+    [0.25, 0.65, 0.10],   # Degraded
+    [0.40, 0.45, 0.15],   # Broken
+], dtype=np.float64)
+
+# Dim 6: negation surge — P(normal | s), P(elevated | s)
+EMISSION_NEGATION = np.array([
+    [0.90, 0.10],   # Healthy
+    [0.70, 0.30],   # Degraded
+    [0.50, 0.50],   # Broken
+], dtype=np.float64)
+
 EMISSION_TABLES: Dict[int, np.ndarray] = {
     DIM_TOOL: EMISSION_TOOL,
     DIM_PROGRESS: EMISSION_PROGRESS,
     DIM_USER: EMISSION_USER,
     DIM_ERROR: EMISSION_ERROR,
+    DIM_LENGTH: EMISSION_LENGTH,
+    DIM_NOVELTY: EMISSION_NOVELTY,
+    DIM_NEGATION: EMISSION_NEGATION,
 }
 
 
@@ -107,41 +140,57 @@ def encode_observation(
     progress_delta: float,
     has_user_msg: bool,
     error_count_delta: int,
+    content_signals: Optional[Dict[int, int]] = None,
 ) -> Dict[int, int]:
     """
     Map raw observation signals to discrete category indices.
 
-    Returns dict: {dim_index: category_index}
+    Parameters
+    ----------
+    tool_ok, progress_delta, has_user_msg, error_count_delta : structural signals
+    content_signals : dict or None
+        Optional content-quality signal categories, e.g.
+        {4: length_cat, 5: novelty_cat, 6: negation_cat}
+        from ContentSignalExtractor.extract().
+
+    Returns
+    -------
+    dict: {dim_index: category_index}
 
     Categories:
       tool_ok:       0=fail, 1=ok
       progress_delta: 0=neg, 1=zero, 2=pos
       user_msg:      0=silent, 1=msg
       error_trend:   0=stable, 1=rising
+      length_z:      0=low, 1=normal, 2=high        [optional]
+      token_novelty: 0=repetitive, 1=normal, 2=fresh [optional]
+      negation:      0=normal, 1=elevated             [optional]
     """
-    # tool
+    # Structural
     tool_cat = 1 if tool_ok else 0
 
-    # progress
     if progress_delta > 0.02:
-        prog_cat = 2       # pos
+        prog_cat = 2
     elif progress_delta < -0.01:
-        prog_cat = 0       # neg
+        prog_cat = 0
     else:
-        prog_cat = 1       # zero
+        prog_cat = 1
 
-    # user
     user_cat = 1 if has_user_msg else 0
-
-    # error trend (discretised at a single step — CUSUM tracks longer trends)
     err_cat = 1 if error_count_delta > 0 else 0
 
-    return {
+    result: Dict[int, int] = {
         DIM_TOOL: tool_cat,
         DIM_PROGRESS: prog_cat,
         DIM_USER: user_cat,
         DIM_ERROR: err_cat,
     }
+
+    # Merge content signals if provided
+    if content_signals:
+        result.update(content_signals)
+
+    return result
 
 
 # ---------------------------------------------------------------------------

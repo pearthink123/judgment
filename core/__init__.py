@@ -2,8 +2,8 @@
 Math-driven decision core — 3-layer architecture.
 
 Layer 1: CUSUM anomaly detection (Hawkes-corrected surprisal)
-Layer 2: 3-state HMM latent-state inference
-Layer 3: POMDP belief-MDP policy lookup
+Layer 2: 3-state HMM latent-state inference (structural + content signals)
+Layer 3: POMDP action selection (POMCP online MCTS or grid value iteration)
 """
 
 from .engine import (
@@ -39,6 +39,8 @@ from .pomdp import (
     solve_belief_mdp,
     get_policy,
 )
+from .pomcp import POMCPPlanner, POMCPSearchInfo
+from .content_signals import ContentSignalExtractor
 from .corrective import (
     CorrectiveRouter,
     CorrectiveAdvice,
@@ -81,6 +83,11 @@ __all__ = [
     "RewardConfig",
     "solve_belief_mdp",
     "get_policy",
+    # POMCP
+    "POMCPPlanner",
+    "POMCPSearchInfo",
+    # Content signals
+    "ContentSignalExtractor",
     # Corrective
     "CorrectiveRouter",
     "CorrectiveAdvice",

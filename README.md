@@ -40,9 +40,11 @@ judgment/
 ├── core/
 │   ├── engine.py          # DecisionEngine: 3-layer integration
 │   ├── hawkes.py          # Multivariate marked Hawkes (likelihood provider)
-│   ├── hmm.py             # 3-state discrete HMM + Forward/Viterbi
+│   ├── hmm.py             # 3-state discrete HMM + Forward/Viterbi (7 obs dims)
 │   ├── cusum.py           # CUSUM anomaly detector
 │   ├── pomdp.py           # Exact belief-MDP value iteration + RewardConfig
+│   ├── pomcp.py           # POMCP — online particle MCTS (no grid, scalable)
+│   ├── content_signals.py # Content-quality metrics (length, novelty, negation)
 │   ├── corrective.py      # Heuristic corrective action router (4 rules)
 │   ├── training.py        # Baum-Welch EM for HMM parameter learning
 │   └── diagnostics.py     # Structured diagnostic outputs
@@ -64,7 +66,7 @@ judgment/
 │   ├── architecture-redesign.md
 │   ├── hawkes-redesign.md
 │   └── three-gaps-design.md
-├── tests/                 # 107 tests, all passing
+├── tests/                 # 139 tests, all passing
 ├── pyproject.toml
 └── README.md
 ```
@@ -73,11 +75,13 @@ judgment/
 
 | Component | Math | Problem Solved |
 |---|---|---|
-| CUSUM + Hawkes | Page (1954) sequential detection + Hawkes (1971) | Detects observation drift; distinguishes noise from real anomalies; Hawkes corrects for expected event clustering |
-| HMM Forward | Rabiner (1989) | Infers hidden health state (H/D/B) from noisy observations; each state has concrete operational meaning |
-| POMDP Value Iteration | Kaelbling et al. (1998) | Optimal action selection under partial observability; exact solve on discretised belief simplex |
-| Corrective Router | Heuristic (explicitly labelled) | Maps engine's CORRECT signal to concrete advice (verify/rethink/retry/rollback) |
-| Baum-Welch (EM) | Rabiner (1989) §III-C | Learns HMM parameters from agent run logs; semi-supervised mode anchors state semantics |
+| CUSUM + Hawkes | Page (1954) + Hawkes (1971) | Detects observation drift; Hawkes corrects for expected event clustering |
+| HMM Forward | Rabiner (1989) | Infers hidden health state (H/D/B) from noisy structural + content signals |
+| POMCP (online MCTS) | Silver & Veness (2010) | Scalable online POMDP solving — particle-based UCT, no grid discretisation |
+| Grid POMDP | Kaelbling et al. (1998) | Exact value iteration on 231-point simplex (fast fallback for 3-state case) |
+| Content Signals | Heuristic (lightweight) | Detects LLM derailment from text output: length anomaly, repetition, self-contradiction |
+| Corrective Router | Heuristic (explicitly labelled) | Maps CORRECT signal to concrete advice (verify/rethink/retry/rollback) |
+| Baum-Welch (EM) | Rabiner (1989) §III-C | Learns HMM parameters from agent run logs; semi-supervised mode |
 
 ## Quick Start
 
@@ -137,8 +141,21 @@ decision = engine.step({
 print(decision.action)  # "continue"
 
 # Learn from logs
-from judgment import train_hmm
-hmm = train_hmm(logs)  # logs: list of trajectories
+hmm = train_hmm(logs)
+
+# POMCP mode — scalable online MCTS (no grid)
+engine = DecisionEngine(use_pomcp=True, pomcp_n_simulations=2000)
+
+# Content-quality monitoring
+engine = DecisionEngine(use_content_signals=True)
+decision = engine.step({
+    "tool_ok": True,
+    "progress_delta": 0.12,
+    "has_user_msg": False,
+    "error_count_delta": 0,
+    "llm_text": "The agent's output text for this step...",
+})
+# decision.content_signals → length_z_cat, novelty_cat, negation_cat
 ```
 
 ## LangGraph Integration
@@ -195,3 +212,4 @@ MIT
 - Rabiner, L. R. (1989). "A Tutorial on Hidden Markov Models." *Proceedings of the IEEE*, 77(2), 257–286.
 - Hawkes, A. G. (1971). "Spectra of Some Self-Exciting and Mutually Exciting Point Processes." *Biometrika*, 58(1), 83–90.
 - Kaelbling, L. P., Littman, M. L., & Cassandra, A. R. (1998). "Planning and Acting in Partially Observable Stochastic Domains." *Artificial Intelligence*, 101(1-2), 99–134.
+- Silver, D. & Veness, J. (2010). "Monte-Carlo Planning in Large POMDPs." *NeurIPS*, 23.
