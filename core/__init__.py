@@ -1,14 +1,9 @@
 """
-MathHarness Judgment Engine
+Math-driven decision core — 3-layer architecture.
 
-A mathematically rigorous decision core for AI Agent Harnesses.
-
-Architecture:
-  Layer 1: CUSUM anomaly detection (Hawkes-corrected surprisal)
-  Layer 2: 3-state HMM latent-state inference (Healthy/Degraded/Broken)
-  Layer 3: Threshold-gate decision (Continue/Correct/Escalate/Gather)
-
-Each layer has a closed-form mathematical foundation with citable references.
+Layer 1: CUSUM anomaly detection (Hawkes-corrected surprisal)
+Layer 2: 3-state HMM latent-state inference
+Layer 3: POMDP belief-MDP policy lookup
 """
 
 from .engine import (
@@ -38,6 +33,21 @@ from .hmm import (
     STATE_NAMES,
 )
 from .cusum import CUSUMDetector
+from .pomdp import (
+    POMDPPolicy,
+    RewardConfig,
+    solve_belief_mdp,
+    get_policy,
+)
+from .corrective import (
+    CorrectiveRouter,
+    CorrectiveAdvice,
+    CORRECTIVE_VERIFY,
+    CORRECTIVE_RETHINK,
+    CORRECTIVE_RETRY,
+    CORRECTIVE_ROLLBACK,
+)
+from .training import train_hmm, baum_welch
 from . import diagnostics
 
 __all__ = [
@@ -66,6 +76,21 @@ __all__ = [
     "STATE_NAMES",
     # CUSUM
     "CUSUMDetector",
+    # POMDP
+    "POMDPPolicy",
+    "RewardConfig",
+    "solve_belief_mdp",
+    "get_policy",
+    # Corrective
+    "CorrectiveRouter",
+    "CorrectiveAdvice",
+    "CORRECTIVE_VERIFY",
+    "CORRECTIVE_RETHINK",
+    "CORRECTIVE_RETRY",
+    "CORRECTIVE_ROLLBACK",
+    # Training
+    "train_hmm",
+    "baum_welch",
     # Diagnostics
     "diagnostics",
 ]

@@ -3,14 +3,14 @@ DecisionEngine — 3-layer stack for Agent Harness action decisions.
 
 Layer 1: CUSUM anomaly detection (Hawkes-corrected surprisal)
 Layer 2: HMM latent-state belief update (Healthy / Degraded / Broken)
-Layer 3: Threshold-gate decision (Continue / Correct / Escalate / Gather)
+Layer 3: POMDP policy lookup (optimal action under uncertainty)
+         Falls back to threshold-gate if POMDP solver unavailable.
 
 Usage inside an agent loop:
 
     engine = DecisionEngine(seed=42)
 
     for step in range(max_steps):
-        # Collect raw observation from harness
         obs = {
             "tool_ok": True,
             "progress_delta": 0.15,
@@ -19,13 +19,11 @@ Usage inside an agent loop:
         }
 
         decision = engine.step(obs)
-        # decision.action ∈ {"continue", "correct", "escalate", "gather"}
-        # decision.belief → {"healthy": 0.82, "degraded": 0.15, "broken": 0.03}
+        # decision.action ∈ {"continue","correct","escalate","gather"}
+        # decision.corrective_advice → CorrectiveAdvice or None
 
         if decision.action == "escalate":
             break
-
-        # Execute in harness, get next observation
 """
 
 import numpy as np
@@ -33,39 +31,53 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List
 
 from .hawkes import (
-    HawkesProcess, HawkesDiagnostics,
-    EVENT_SUCCESS, EVENT_ERROR, EVENT_USER, EVENT_TOOL,
+    HawkesProcess,
+    EVENT_ERROR, EVENT_TOOL,
 )
 from .hmm import (
     HiddenMarkovModel, encode_observation,
     STATE_HEALTHY, STATE_DEGRADED, STATE_BROKEN, STATE_NAMES,
 )
 from .cusum import CUSUMDetector
+from .corrective import CorrectiveRouter, CorrectiveAdvice
+from .pomdp import (
+    POMDPPolicy, RewardConfig, get_policy,
+    ACT_CONTINUE, ACT_CORRECT, ACT_ESCALATE, ACT_GATHER,
+    ACTION_NAMES_POMDP,
+)
 
 
 # ---------------------------------------------------------------------------
 # Decision output
 # ---------------------------------------------------------------------------
-# Canonical action set
-ACTION_CONTINUE = "continue"     # next planned tool-call
-ACTION_CORRECT = "correct"       # verify / rethink / repair
-ACTION_ESCALATE = "escalate"     # ask user / rollback / restart
-ACTION_GATHER = "gather"         # low-cost info collection
+ACTION_CONTINUE = "continue"
+ACTION_CORRECT = "correct"
+ACTION_ESCALATE = "escalate"
+ACTION_GATHER = "gather"
 
 ACTION_SET = {ACTION_CONTINUE, ACTION_CORRECT, ACTION_ESCALATE, ACTION_GATHER}
+
+# Map POMDP action indices → string
+_POMDP_TO_ACTION = {
+    ACT_CONTINUE: ACTION_CONTINUE,
+    ACT_CORRECT: ACTION_CORRECT,
+    ACT_ESCALATE: ACTION_ESCALATE,
+    ACT_GATHER: ACTION_GATHER,
+}
 
 
 @dataclass
 class Decision:
     """Structured output of one engine.step() call."""
 
-    action: str                    # one of ACTION_SET
-    belief: Dict[str, float]       # {"healthy": p, "degraded": p, "broken": p}
-    confidence: float              # belief mass on the dominant state
-    anomaly: bool                  # did CUSUM fire this step?
-    drift: float                   # current CUSUM statistic S_t
+    action: str
+    belief: Dict[str, float]
+    confidence: float
+    anomaly: bool
+    drift: float
     layer_diagnostics: Dict[str, Any] = field(default_factory=dict)
     rationale: str = ""
+    corrective_advice: Optional[CorrectiveAdvice] = None
 
 
 # ---------------------------------------------------------------------------
@@ -75,20 +87,17 @@ class DecisionEngine:
     """
     3-layer math-driven decision engine.
 
+    Layer 3 defaults to POMDP policy lookup; falls back to threshold-gate
+    if ``use_pomdp=False`` or the POMDP solver fails.
+
     Parameters
     ----------
-    hmm : HiddenMarkovModel or None
-    hawkes : HawkesProcess or None
-    cusum : CUSUMDetector or None
-    theta_broken : float
-        P(Broken) threshold for escalation (default 0.45).
-    theta_degraded : float
-        P(Degraded) threshold for corrective action (default 0.35).
-    theta_healthy : float
-        P(Healthy) threshold for confident continue (default 0.60).
-    hysteresis_margin : float
-        Extra margin required to change decision when oscillating (default 0.08).
-    seed : int or None
+    hmm, hawkes, cusum : optional component overrides.
+    reward : RewardConfig or str preset name.
+    use_pomdp : bool — default True.
+    use_corrective : bool — default True (attach advice on CORRECT).
+    pomdp_resolution : float — belief grid step (default 0.05).
+    seed : int or None.
     """
 
     def __init__(
@@ -96,10 +105,10 @@ class DecisionEngine:
         hmm: Optional[HiddenMarkovModel] = None,
         hawkes: Optional[HawkesProcess] = None,
         cusum: Optional[CUSUMDetector] = None,
-        theta_broken: float = 0.45,
-        theta_degraded: float = 0.35,
-        theta_healthy: float = 0.60,
-        hysteresis_margin: float = 0.08,
+        reward: Optional[RewardConfig] = None,
+        use_pomdp: bool = True,
+        use_corrective: bool = True,
+        pomdp_resolution: float = 0.05,
         seed: Optional[int] = None,
     ):
         self.hmm = hmm or HiddenMarkovModel()
@@ -107,12 +116,28 @@ class DecisionEngine:
         self.cusum = cusum or CUSUMDetector()
         self.rng = np.random.default_rng(seed)
 
-        self.theta_broken = float(theta_broken)
-        self.theta_degraded = float(theta_degraded)
-        self.theta_healthy = float(theta_healthy)
-        self.hysteresis_margin = float(hysteresis_margin)
+        self.use_pomdp = use_pomdp
+        self.use_corrective = use_corrective
 
-        # Running state
+        # ---- POMDP policy ----
+        self._policy: Optional[POMDPPolicy] = None
+        self._pomdp_resolution = pomdp_resolution
+        if use_pomdp:
+            try:
+                self._policy = get_policy(reward=reward, resolution=pomdp_resolution)
+            except Exception:
+                self._policy = None
+
+        # ---- Corrective router ----
+        self.corrective = CorrectiveRouter() if use_corrective else None
+
+        # ---- Threshold fallback ----
+        self.theta_broken = 0.45
+        self.theta_degraded = 0.35
+        self.theta_healthy = 0.60
+        self.hysteresis_margin = 0.08
+
+        # ---- State ----
         self.step_count: int = 0
         self.prev_action: Optional[str] = None
         self.prev_belief: Optional[np.ndarray] = None
@@ -122,50 +147,29 @@ class DecisionEngine:
     # Main API
     # ------------------------------------------------------------------
     def step(self, observation: Dict[str, Any]) -> Decision:
-        """
-        Process one observation and return a Decision.
-
-        Parameters
-        ----------
-        observation : dict with keys:
-            tool_ok          : bool — did the tool call succeed?
-            progress_delta   : float — Δ in task progress (0–1 scale)
-            has_user_msg     : bool — did the user send a message this step?
-            error_count_delta: int — new errors this step
-
-        Returns
-        -------
-        Decision
-        """
         self.step_count += 1
         t = float(self.step_count)
 
-        # --- Extract observation fields ---
+        # --- Extract observation ---
         tool_ok = bool(observation.get("tool_ok", True))
         progress_delta = float(observation.get("progress_delta", 0.0))
         has_user_msg = bool(observation.get("has_user_msg", False))
         error_count_delta = int(observation.get("error_count_delta", 0))
 
         # ==================================================================
-        # LAYER 1: Feed Hawkes + CUSUM
+        # LAYER 1: Hawkes + CUSUM
         # ==================================================================
         self.hawkes.add_observation(t, tool_ok, has_user_msg, progress_delta, error_count_delta)
 
-        # Encode for HMM
         obs_cats = encode_observation(tool_ok, progress_delta, has_user_msg, error_count_delta)
 
-        # Per-state log-likelihoods (before HMM update)
-        log_lik_per_state = self.hmm.log_obs_likelihood(obs_cats)  # shape (3,)
-
-        # Surprisals: -log P(o | state)
+        log_lik_per_state = self.hmm.log_obs_likelihood(obs_cats)
         healthy_surprisal = -float(log_lik_per_state[STATE_HEALTHY])
         degraded_surprisal = -float(log_lik_per_state[STATE_DEGRADED])
 
-        # Hawkes intensity for the primary event type of this observation
         dominant_type = EVENT_ERROR if (not tool_ok or error_count_delta > 0) else EVENT_TOOL
         hawkes_lam = self.hawkes.intensity_for(dominant_type, t)
 
-        # CUSUM update
         cusum_result = self.cusum.update(
             surprisal_healthy=healthy_surprisal,
             hawkes_intensity=hawkes_lam,
@@ -174,53 +178,57 @@ class DecisionEngine:
         anomaly = bool(cusum_result["alarm"])
 
         # ==================================================================
-        # LAYER 2: HMM forward update
+        # LAYER 2: HMM forward
         # ==================================================================
         belief = self.hmm.forward_step(obs_cats)
 
-        # If CUSUM alarmed, nudge belief toward Degraded
-        # (this is a soft prior, not a hard override)
         if anomaly:
             belief_perturbed = belief.copy()
             belief_perturbed[STATE_HEALTHY] *= 0.7
-            belief_perturbed[STATE_DEGRADED] = min(
-                belief_perturbed[STATE_DEGRADED] + 0.15, 1.0
-            )
+            belief_perturbed[STATE_DEGRADED] = min(belief_perturbed[STATE_DEGRADED] + 0.15, 1.0)
             belief_perturbed = belief_perturbed / belief_perturbed.sum()
         else:
             belief_perturbed = belief
 
         # ==================================================================
-        # LAYER 3: Threshold gate
+        # LAYER 3: POMDP policy (or threshold fallback)
         # ==================================================================
-        p_healthy = float(belief_perturbed[STATE_HEALTHY])
-        p_degraded = float(belief_perturbed[STATE_DEGRADED])
-        p_broken = float(belief_perturbed[STATE_BROKEN])
-
-        # Candidate action before hysteresis
-        raw_action = self._gate(p_healthy, p_degraded, p_broken)
-
-        # Hysteresis: require extra margin to flip from previous action
-        action = self._apply_hysteresis(raw_action, p_healthy, p_degraded, p_broken)
-
-        # Confidence: probability mass on the state driving the decision
-        if action == ACTION_ESCALATE:
-            confidence = p_broken
-        elif action == ACTION_CORRECT:
-            confidence = p_degraded
-        elif action == ACTION_CONTINUE:
-            confidence = p_healthy
+        if self._policy is not None:
+            pomdp_action_idx = self._policy.best_action(belief_perturbed)
+            raw_action = _POMDP_TO_ACTION[pomdp_action_idx]
+            action = self._hysteresis(raw_action, belief_perturbed)
+            q_vals = self._policy.q_values(belief_perturbed)
         else:
-            confidence = 1.0 - max(p_healthy, p_degraded, p_broken)
+            p_h = float(belief_perturbed[STATE_HEALTHY])
+            p_d = float(belief_perturbed[STATE_DEGRADED])
+            p_b = float(belief_perturbed[STATE_BROKEN])
+            raw_action = self._gate(p_h, p_d, p_b)
+            action = self._hysteresis(raw_action, belief_perturbed)
+            q_vals = {}
+
+        # Confidence: belief mass on the dominant state
+        if action == ACTION_ESCALATE:
+            confidence = float(belief_perturbed[STATE_BROKEN])
+        elif action == ACTION_CORRECT:
+            confidence = float(belief_perturbed[STATE_DEGRADED])
+        elif action == ACTION_CONTINUE:
+            confidence = float(belief_perturbed[STATE_HEALTHY])
+        else:
+            confidence = 1.0 - float(belief_perturbed.max())
+
+        # Corrective advice
+        corrective_advice = None
+        if action == ACTION_CORRECT and self.corrective is not None:
+            corrective_advice = self.corrective.analyse(self.decision_log)
 
         # Rationale
-        rationale = self._build_rationale(action, p_healthy, p_degraded, p_broken, anomaly, cusum_result)
+        rationale = self._build_rationale(action, belief_perturbed, anomaly, cusum_result, q_vals)
 
         # Assemble
         belief_dict = {
-            "healthy": round(p_healthy, 4),
-            "degraded": round(p_degraded, 4),
-            "broken": round(p_broken, 4),
+            "healthy": round(float(belief_perturbed[STATE_HEALTHY]), 4),
+            "degraded": round(float(belief_perturbed[STATE_DEGRADED]), 4),
+            "broken": round(float(belief_perturbed[STATE_BROKEN]), 4),
         }
 
         diag = {
@@ -231,6 +239,7 @@ class DecisionEngine:
             "hawkes_intensities": self.hawkes.intensity(t).tolist(),
             "cusum_alarm_count": self.cusum.alarm_count,
             "most_likely_state": STATE_NAMES[self.hmm.most_likely_state()],
+            "pomdp_q_values": q_vals,
         }
 
         decision = Decision(
@@ -241,58 +250,45 @@ class DecisionEngine:
             drift=round(cusum_result["S"], 4),
             layer_diagnostics=diag,
             rationale=rationale,
+            corrective_advice=corrective_advice if corrective_advice else None,
         )
 
-        # Persist
         self.prev_action = action
         self.prev_belief = belief_perturbed
         self.decision_log.append(decision)
-
         return decision
 
     # ------------------------------------------------------------------
-    # Gating logic
+    # Fallback: threshold gate (used when POMDP unavailable)
     # ------------------------------------------------------------------
-    def _gate(
-        self, p_healthy: float, p_degraded: float, p_broken: float
-    ) -> str:
-        """
-        Threshold gate mapping belief → action.
-
-        Priority order: escalate > correct > continue > gather.
-        """
-        if p_broken >= self.theta_broken:
+    def _gate(self, p_h: float, p_d: float, p_b: float) -> str:
+        if p_b >= self.theta_broken:
             return ACTION_ESCALATE
-        if p_degraded >= self.theta_degraded:
+        if p_d >= self.theta_degraded:
             return ACTION_CORRECT
-        if p_healthy >= self.theta_healthy:
+        if p_h >= self.theta_healthy:
             return ACTION_CONTINUE
         return ACTION_GATHER
 
-    def _apply_hysteresis(
-        self,
-        raw_action: str,
-        p_healthy: float,
-        p_degraded: float,
-        p_broken: float,
-    ) -> str:
-        """Prevent boundary oscillation by requiring extra margin to change."""
+    def _hysteresis(self, raw_action: str, belief: np.ndarray) -> str:
+        """Prevent oscillation by requiring extra margin to change action."""
         if self.prev_action is None or raw_action == self.prev_action:
             return raw_action
 
-        # Action wants to change — require extra margin
+        p_h = float(belief[STATE_HEALTHY])
+        p_d = float(belief[STATE_DEGRADED])
+        p_b = float(belief[STATE_BROKEN])
+        m = self.hysteresis_margin
+
         if raw_action == ACTION_ESCALATE and self.prev_action != ACTION_ESCALATE:
-            if p_broken < self.theta_broken + self.hysteresis_margin:
+            if p_b < self.theta_broken + m:
                 return self.prev_action
-
         if raw_action == ACTION_CORRECT and self.prev_action == ACTION_CONTINUE:
-            if p_degraded < self.theta_degraded + self.hysteresis_margin:
+            if p_d < self.theta_degraded + m:
                 return self.prev_action
-
         if raw_action == ACTION_CONTINUE and self.prev_action == ACTION_CORRECT:
-            if p_healthy < self.theta_healthy + self.hysteresis_margin:
+            if p_h < self.theta_healthy + m:
                 return self.prev_action
-
         return raw_action
 
     # ------------------------------------------------------------------
@@ -301,28 +297,37 @@ class DecisionEngine:
     def _build_rationale(
         self,
         action: str,
-        p_h: float,
-        p_d: float,
-        p_b: float,
+        belief: np.ndarray,
         anomaly: bool,
         cusum: Dict[str, float],
+        q_vals: Dict[str, float],
     ) -> str:
         parts: list[str] = []
+        p_h = float(belief[STATE_HEALTHY])
+        p_d = float(belief[STATE_DEGRADED])
+        p_b = float(belief[STATE_BROKEN])
 
-        if action == ACTION_ESCALATE:
-            parts.append(f"P(Broken)={p_b:.2f} ≥ θ_B={self.theta_broken}")
-        elif action == ACTION_CORRECT:
-            parts.append(f"P(Degraded)={p_d:.2f} ≥ θ_D={self.theta_degraded}")
-        elif action == ACTION_CONTINUE:
-            parts.append(f"P(Healthy)={p_h:.2f} ≥ θ_H={self.theta_healthy}")
+        if self._policy is not None and q_vals:
+            best_q = max(q_vals.values())
+            runner_up = sorted(q_vals.values(), reverse=True)[1] if len(q_vals) > 1 else best_q
+            margin = best_q - runner_up
+            parts.append(
+                f"POMDP: {action} (Q*={best_q:.2f}, margin={margin:.2f})"
+            )
         else:
-            parts.append("belief ambiguous — gathering information")
+            if action == ACTION_ESCALATE:
+                parts.append(f"P(B)={p_b:.2f} ≥ θ_B={self.theta_broken}")
+            elif action == ACTION_CORRECT:
+                parts.append(f"P(D)={p_d:.2f} ≥ θ_D={self.theta_degraded}")
+            elif action == ACTION_CONTINUE:
+                parts.append(f"P(H)={p_h:.2f} ≥ θ_H={self.theta_healthy}")
+            else:
+                parts.append("belief ambiguous")
 
         if anomaly:
-            parts.append("CUSUM alarm fired")
-
+            parts.append("CUSUM alarm")
         if cusum.get("S", 0) > self.cusum.h * 0.5:
-            parts.append(f"drift elevated (S={cusum['S']:.2f})")
+            parts.append(f"S={cusum['S']:.2f}")
 
         return " | ".join(parts) if parts else "default"
 
@@ -330,7 +335,6 @@ class DecisionEngine:
     # Diagnostics
     # ------------------------------------------------------------------
     def get_diagnostics_dataframe(self):
-        """Diagnostics DataFrame for dashboards."""
         import pandas as pd
         if not self.decision_log:
             return pd.DataFrame()
