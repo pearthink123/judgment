@@ -1,6 +1,8 @@
 """
 judgment — Math-Driven Agent Decision Engine + Harness.
 
+Version: 0.2.0
+
 Quick start:
     from judgment import JudgmentHarness
 
@@ -14,6 +16,8 @@ CLI:
     judgment train ./logs/
     judgment dashboard
 """
+
+from .core.version import __version__
 
 from .harness import (
     JudgmentHarness,

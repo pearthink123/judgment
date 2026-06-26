@@ -1,0 +1,39 @@
+[
+  {
+    "engine": "grid",
+    "n_trajectories": 100,
+    "duration_seconds": 1.01,
+    "healthy_trajectories": 30,
+    "faulty_trajectories": 70,
+    "false_positive_rate": 0.04,
+    "detection_rate": 1.0,
+    "median_detection_delay": 2.0,
+    "mean_detection_delay": 1.5,
+    "escalation_rate": 1.0,
+    "healthy_escalation_rate": 0.1667,
+    "action_distribution": {
+      "continue": 1371,
+      "escalate": 1262,
+      "correct": 367
+    }
+  },
+  {
+    "engine": "pomcp",
+    "n_trajectories": 100,
+    "duration_seconds": 370.42,
+    "healthy_trajectories": 30,
+    "faulty_trajectories": 70,
+    "false_positive_rate": 0.04,
+    "detection_rate": 1.0,
+    "median_detection_delay": 2.0,
+    "mean_detection_delay": 1.5,
+    "escalation_rate": 1.0,
+    "healthy_escalation_rate": 0.3667,
+    "action_distribution": {
+      "continue": 1061,
+      "gather": 304,
+      "escalate": 1131,
+      "correct": 504
+    }
+  }
+]
