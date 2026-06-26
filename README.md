@@ -62,8 +62,8 @@ math_harness_judgment/
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOURNAME/math_harness_judgment.git
-cd math_harness_judgment
+git clone https://github.com/pearthink123/judgment.git
+cd judgment   # or the folder name after clone
 pip install -r requirements.txt
 
 # Run the demo
@@ -71,6 +71,9 @@ python examples/coding_agent_demo.py
 
 # Launch the dashboard
 streamlit run dashboard/app.py
+```
+
+**GitHub**: https://github.com/pearthink123/judgment
 ```
 
 ## Using the Judgment Engine
