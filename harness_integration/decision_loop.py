@@ -1,17 +1,29 @@
 """
 MathDrivenDecisionLoop
 
-A thin wrapper showing how to integrate the JudgmentEngine into a classic
-Agent harness loop (ReAct-style or Plan-Execute-Verify).
+Thin wrapper showing how to integrate the DecisionEngine into a classic
+Agent harness loop (ReAct, Plan-Execute-Verify, LangGraph, CrewAI, etc.).
 
-This is deliberately simple and self-contained so it can be dropped into
-LangGraph, CrewAI, custom loops, or DeepSeek's internal harness.
+Usage:
+    engine = DecisionEngine(seed=42)
+    loop = MathDrivenDecisionLoop(engine)
+
+    def my_executor(action: str, ctx: dict) -> dict:
+        # Actually run the tool and return observation
+        return {"tool_ok": True, "progress_delta": 0.1, ...}
+
+    result = loop.run(initial_obs, my_executor)
 """
 
 from typing import Dict, Any, Callable, Optional
 from dataclasses import dataclass
 
-from ..core import JudgmentEngine, Decision
+from core.engine import (
+    DecisionEngine,
+    Decision,
+    ACTION_ESCALATE,
+    ACTION_CONTINUE,
+)
 
 
 @dataclass
@@ -24,14 +36,18 @@ class HarnessTurn:
 
 class MathDrivenDecisionLoop:
     """
-    Example math-augmented agent loop.
+    Math-augmented agent loop using the 3-layer DecisionEngine.
 
     You provide:
-      - execute_action(action, context) -> outcome_dict
+      - execute_action(action: str, context: dict) -> observation_dict
     """
 
-    def __init__(self, engine: Optional[JudgmentEngine] = None, max_steps: int = 25):
-        self.engine = engine or JudgmentEngine()
+    def __init__(
+        self,
+        engine: Optional[DecisionEngine] = None,
+        max_steps: int = 30,
+    ):
+        self.engine = engine or DecisionEngine()
         self.max_steps = max_steps
         self.history: list[HarnessTurn] = []
 
@@ -42,45 +58,92 @@ class MathDrivenDecisionLoop:
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Run until task done or max steps.
+        Run until task done, escalation, or max steps.
+
+        Parameters
+        ----------
+        initial_observation : dict
+            Must contain: tool_ok, progress_delta, has_user_msg, error_count_delta
+        execute_action : callable
+            (action: str, context: dict) -> observation dict
+        context : dict or None
+            Passed through to execute_action each step.
+
+        Returns
+        -------
+        dict with keys: status, steps, final_belief, [reason]
         """
         obs = dict(initial_observation)
-        ctx = context or {"task": "coding_task"}
+        ctx = dict(context or {})
 
         for step in range(1, self.max_steps + 1):
-            decision = self.engine.decide(obs, ctx)
+            decision = self.engine.step(obs)
 
-            # Execute in the real harness
+            # Execute
             outcome = execute_action(decision.action, {**ctx, "step": step})
 
-            # Feedback
-            self.engine.record_outcome(decision.action, outcome)
-
-            turn = HarnessTurn(step=step, observation=obs, decision=decision, outcome=outcome)
+            turn = HarnessTurn(
+                step=step,
+                observation=obs,
+                decision=decision,
+                outcome=outcome,
+            )
             self.history.append(turn)
 
-            obs = outcome   # next observation comes from outcome
+            obs = outcome  # next observation
 
-            # Termination heuristics (real harness would be better)
+            # Termination
             if outcome.get("task_completed"):
-                return {"status": "success", "steps": step, "final_belief": decision.belief}
+                return {
+                    "status": "success",
+                    "steps": step,
+                    "final_belief": decision.belief,
+                }
 
-            if decision.belief.get("stuck", 0) > 0.82 and decision.action == "escalate_to_user":
-                return {"status": "escalated", "steps": step, "reason": "high stuck risk"}
+            if (
+                decision.action == ACTION_ESCALATE
+                and decision.belief.get("broken", 0) > 0.55
+            ):
+                return {
+                    "status": "escalated",
+                    "steps": step,
+                    "reason": "engine requested escalation",
+                    "final_belief": decision.belief,
+                }
 
-            if step >= 3 and decision.belief.get("task_success", 0) < 0.12:
-                return {"status": "failed", "steps": step, "final_belief": decision.belief}
+            if (
+                step >= 5
+                and decision.action == ACTION_ESCALATE
+                and decision.anomaly
+            ):
+                return {
+                    "status": "escalated",
+                    "steps": step,
+                    "reason": "persistent anomaly + high broken belief",
+                    "final_belief": decision.belief,
+                }
 
-        return {"status": "max_steps", "steps": self.max_steps, "final_belief": self.engine.last_decision.belief if self.engine.last_decision else {}}
+        return {
+            "status": "max_steps",
+            "steps": self.max_steps,
+            "final_belief": (
+                self.engine.decision_log[-1].belief
+                if self.engine.decision_log
+                else {}
+            ),
+        }
 
     def get_summary(self) -> Dict[str, Any]:
         if not self.history:
             return {}
-        successes = sum(1 for h in self.history if h.outcome.get("tool_success"))
+        successes = sum(1 for h in self.history if h.outcome.get("tool_ok"))
         return {
             "total_steps": len(self.history),
             "actions_taken": [h.decision.action for h in self.history],
-            "avg_confidence": sum(h.decision.confidence for h in self.history) / len(self.history),
-            "avg_trigger": sum(h.decision.trigger_intensity for h in self.history) / len(self.history),
+            "avg_confidence": (
+                sum(h.decision.confidence for h in self.history)
+                / len(self.history)
+            ),
+            "anomalies_detected": sum(1 for h in self.history if h.decision.anomaly),
             "tool_success_rate": successes / len(self.history),
         }

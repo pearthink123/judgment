@@ -2,16 +2,15 @@
 """
 coding_agent_demo.py
 
-A self-contained demo of the Math Judgment Engine controlling a simulated
-coding Agent Harness loop.
+Self-contained demo of the DecisionEngine controlling a simulated
+coding Agent harness loop.
 
-Task: Implement + test a small Python utility (e.g. LRU cache decorator + usage).
+Task: implement + test a small Python utility (LRU cache decorator).
 
-At each step the JudgmentEngine decides the next action using:
-- Hawkes process (proactive trigger)
-- Bayesian belief over task success / error risk / stuck
-- EVOI (which action gives the most value right now)
-- PID + stochastic control for regulation
+Architecture:
+  Layer 1 — CUSUM anomaly detection (Hawkes-corrected surprisal)
+  Layer 2 — 3-state HMM latent-state inference (Healthy/Degraded/Broken)
+  Layer 3 — Threshold-gate decision (Continue/Correct/Escalate/Gather)
 
 Run:
     python examples/coding_agent_demo.py
@@ -19,16 +18,20 @@ Run:
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-from core.judgment_engine import JudgmentEngine
+from core.engine import DecisionEngine, ACTION_CONTINUE, ACTION_CORRECT, ACTION_ESCALATE, ACTION_GATHER
 
 
+# ---------------------------------------------------------------------------
+# Simulated harness — maps Engine actions to environment outcomes
+# ---------------------------------------------------------------------------
 def simulate_coding_harness(action: str, state: dict) -> dict:
     """
-    Fake execution environment (improved so the task can actually succeed).
-    The math engine now has a chance to drive a successful run.
+    Fake execution environment.  The Engine chooses an action;
+    this function simulates what would happen in a real harness.
     """
     state.setdefault("code_written", False)
     state.setdefault("tests_run", 0)
@@ -36,137 +39,173 @@ def simulate_coding_harness(action: str, state: dict) -> dict:
     state.setdefault("progress", 0.0)
     state.setdefault("verified", False)
 
-    obs = {"steps_taken": state.get("steps", 0)}
+    obs: dict = {}
 
-    if action == "think":
-        obs["progress_delta"] = 0.07
-        obs["tool_success"] = True
-        state["progress"] = min(0.95, state["progress"] + 0.07)
-
-    elif action == "read_file":
-        obs["tool_success"] = True
-        delta = 0.09 if not state["code_written"] else 0.06
-        obs["progress_delta"] = delta
-        state["progress"] = min(0.95, state["progress"] + delta)
-
-    elif action == "edit_code":
+    if action == ACTION_CONTINUE:
+        # Execute the next planned tool call (simulated as "edit_code")
         if not state["code_written"]:
             state["code_written"] = True
-            obs["tool_success"] = True
+            obs["tool_ok"] = True
             obs["progress_delta"] = 0.42
             state["progress"] = max(state["progress"], 0.42)
         else:
-            obs["tool_success"] = True
-            obs["progress_delta"] = 0.15
-            state["progress"] = min(0.93, state["progress"] + 0.15)
+            obs["tool_ok"] = True
+            obs["progress_delta"] = 0.12
+            state["progress"] = min(0.93, state["progress"] + 0.12)
 
-    elif action == "run_tests":
-        state["tests_run"] += 1
-        if state["code_written"]:
-            # After code is written, tests have a reasonable chance
-            success = np.random.rand() > (0.28 if state["errors"] < 3 else 0.45)
-            obs["tool_success"] = success
+        obs["error_count_delta"] = 0
+
+    elif action == ACTION_CORRECT:
+        # Verify current state, run checks, fix issues
+        if state["code_written"] and state["tests_run"] >= 1:
+            success = np.random.rand() > 0.25
+            obs["tool_ok"] = success
             if success:
                 obs["progress_delta"] = 0.18
-                state["progress"] = max(state["progress"], 0.72)
+                state["progress"] = min(0.95, state["progress"] + 0.18)
                 obs["error_count_delta"] = 0
             else:
+                obs["progress_delta"] = -0.04
                 obs["error_count_delta"] = 1
                 state["errors"] += 1
-                state["progress"] = max(0.25, state["progress"] - 0.04)
         else:
-            # Testing before writing code → bad idea
-            obs["tool_success"] = False
-            obs["error_count_delta"] = 1
-            state["errors"] += 1
+            # Correct before anything is built — mild info gathering
+            obs["tool_ok"] = True
+            obs["progress_delta"] = 0.05
+            obs["error_count_delta"] = 0
 
-    elif action == "verify":
-        if state["tests_run"] >= 1 and state["progress"] >= 0.65:
-            obs["tool_success"] = True
-            obs["progress_delta"] = 0.15
-            state["verified"] = True
-            state["progress"] = min(0.98, state["progress"] + 0.15)
-        else:
-            obs["tool_success"] = False
-            obs["error_count_delta"] = 1
+    elif action == ACTION_GATHER:
+        # Read file, check status — low-cost info
+        obs["tool_ok"] = True
+        delta = 0.08 if not state["code_written"] else 0.04
+        obs["progress_delta"] = delta
+        state["progress"] = min(0.95, state["progress"] + delta)
+        obs["error_count_delta"] = 0
 
-    elif action == "escalate_to_user":
-        obs["user_response"] = "positive" if state["errors"] >= 2 else "neutral"
-        obs["tool_success"] = True
-        obs["progress_delta"] = 0.08
-        state["progress"] = min(0.9, state["progress"] + 0.08)
+    elif action == ACTION_ESCALATE:
+        # Ask user for help
+        obs["tool_ok"] = True
+        obs["has_user_msg"] = True
+        obs["progress_delta"] = 0.06
+        state["progress"] = min(0.90, state["progress"] + 0.06)
+        obs["error_count_delta"] = 0
 
     else:
-        obs["tool_success"] = True
+        obs["tool_ok"] = True
         obs["progress_delta"] = 0.02
+        obs["error_count_delta"] = 0
 
     state["steps"] = state.get("steps", 0) + 1
     obs["progress"] = round(state["progress"], 3)
     obs["errors_so_far"] = state["errors"]
     obs["tests_run"] = state["tests_run"]
 
-    if state["verified"] or (state["code_written"] and state["progress"] >= 0.91 and state["tests_run"] >= 1):
+    # Task completion check
+    if state["code_written"] and state["progress"] >= 0.90:
         obs["task_completed"] = True
 
     return obs
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
     print("=" * 70)
-    print("MathHarness Judgment Engine — Coding Agent Demo")
-    print("Task: Build and verify a small Python utility using math-driven decisions")
+    print("DecisionEngine — 3-Layer Math-Driven Coding Agent Demo")
+    print("  Layer 1: CUSUM + Hawkes (anomaly detection)")
+    print("  Layer 2: 3-State HMM (Healthy / Degraded / Broken)")
+    print("  Layer 3: Threshold Gate (Continue / Correct / Escalate / Gather)")
     print("=" * 70)
     print()
 
-    engine = JudgmentEngine(seed=137)
-    state = {}
-    obs = {
+    engine = DecisionEngine(seed=42)
+    state: dict = {}
+
+    # Initial observation — all clean
+    obs: dict = {
+        "tool_ok": True,
         "progress_delta": 0.0,
-        "tool_success": True,
+        "has_user_msg": False,
         "error_count_delta": 0,
-        "steps_taken": 0,
     }
 
-    max_steps = 18
+    max_steps = 20
     for step in range(1, max_steps + 1):
-        decision = engine.decide(obs, {"task": "implement_lru_cache_utility"})
+        decision = engine.step(obs)
+
+        belief = decision.belief
+        diag = decision.layer_diagnostics
 
         print(f"\n[Step {step:02d}]")
-        print(f"  Belief: task_success={decision.belief['task_success']:.3f}  "
-              f"error_risk={decision.belief['error_risk']:.3f}  stuck={decision.belief['stuck']:.3f}")
-        print(f"  Trigger (Hawkes): {decision.trigger_intensity:.3f}")
-        print(f"  EVOI chosen: {decision.evoi:.3f}   |  confidence={decision.confidence:.3f}")
-        print(f"  Control: agg={decision.control.aggressiveness:.2f}  corr={decision.control.correction_gain:.2f}  throttle={decision.control.throttle:.2f}")
-        print(f"  → DECISION: {decision.action}")
+        print(
+            f"  Belief: H={belief['healthy']:.3f}  "
+            f"D={belief['degraded']:.3f}  B={belief['broken']:.3f}"
+        )
+        print(
+            f"  Drift: S={decision.drift:.3f}  "
+            f"anomaly={decision.anomaly}  "
+            f"CUSUM alarms={diag['cusum_alarm_count']}"
+        )
+        print(
+            f"  Hawkes λ: succ={diag['hawkes_intensities'][0]:.3f}  "
+            f"err={diag['hawkes_intensities'][1]:.3f}  "
+            f"user={diag['hawkes_intensities'][2]:.3f}  "
+            f"tool={diag['hawkes_intensities'][3]:.3f}"
+        )
+        print(
+            f"  → ACTION: {decision.action.upper()}  "
+            f"(confidence={decision.confidence:.3f})"
+        )
         print(f"    Rationale: {decision.rationale}")
 
-        # Execute
+        # Execute in simulated harness
         outcome = simulate_coding_harness(decision.action, state)
+
+        # Inject occasional errors to test detection
+        if step == 6 and not outcome.get("task_completed"):
+            outcome["tool_ok"] = False
+            outcome["error_count_delta"] = 1
+            outcome["progress_delta"] = -0.05
+            state["errors"] = state.get("errors", 0) + 1
+            print("  [!] INJECTED ERROR at step 6")
+
+        if step == 7 and not outcome.get("task_completed"):
+            outcome["tool_ok"] = False
+            outcome["error_count_delta"] = 1
+            outcome["progress_delta"] = -0.03
+            state["errors"] = state.get("errors", 0) + 1
+            print("  [!] INJECTED ERROR at step 7")
+
         obs = outcome
 
-        print(f"  Outcome: progress={outcome.get('progress',0):.2f}  "
-              f"success={outcome.get('tool_success')}  errors={outcome.get('errors_so_far',0)}")
+        print(
+            f"  Outcome: progress={outcome.get('progress', 0):.2f}  "
+            f"tool_ok={outcome.get('tool_ok')}  "
+            f"errors_so_far={outcome.get('errors_so_far', 0)}"
+        )
 
         if outcome.get("task_completed"):
             print("\n" + "=" * 70)
-            print("✅ TASK COMPLETED SUCCESSFULLY")
+            print("TASK COMPLETED")
             print(f"Total steps: {step}")
-            print(f"Final belief: {decision.belief}")
+            print(f"Final belief: {belief}")
             break
 
-        if decision.belief.get("stuck", 0) > 0.78 and decision.action == "escalate_to_user":
-            print("\n⚠️  Escalated to user (high stuck risk)")
+        if decision.action == ACTION_ESCALATE and decision.confidence > 0.50:
+            print("\n  Escalated to user.")
             break
     else:
         print("\nReached max steps.")
 
+    # Summary
     print("\n" + "=" * 70)
-    print("Decision log summary (last 6):")
+    print("Decision Log Summary (last 8):")
     df = engine.get_diagnostics_dataframe()
     if not df.empty:
-        print(df.tail(6).to_string(index=False))
+        print(df.tail(8).to_string(index=False))
 
-    print("\nDone. You can also run the Streamlit dashboard:")
+    print("\nRun the Streamlit dashboard:")
     print("    streamlit run dashboard/app.py")
 
 

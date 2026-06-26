@@ -1,16 +1,20 @@
 """
-Streamlit dashboard for MathHarness Judgment Engine.
+Streamlit dashboard for the 3-layer DecisionEngine.
 
-Shows live belief evolution, Hawkes trigger intensity, EVOI scores and decisions.
+Visualises:
+  - HMM belief evolution (Layer 2)
+  - CUSUM drift + alarms (Layer 1)
+  - Decision trace (Layer 3)
+  - Hawkes per-type intensities
 
 Run:
-    cd math_harness_judgment
     pip install -r requirements.txt
     streamlit run dashboard/app.py
 """
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import streamlit as st
@@ -18,40 +22,73 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from core.judgment_engine import JudgmentEngine
+from core.engine import DecisionEngine
 from examples.coding_agent_demo import simulate_coding_harness
 
-st.set_page_config(page_title="MathHarness Judgment Engine", layout="wide")
-st.title("MathHarness Judgment Engine — Live Dashboard")
-st.markdown("**Mathematical Decision Core for Production Agent Harnesses**  |  Poisson/Hawkes · Bayesian · EVOI · PID Control")
+st.set_page_config(page_title="DecisionEngine Dashboard", layout="wide")
+st.title("DecisionEngine — 3-Layer Math-Driven Dashboard")
+st.markdown(
+    "**Layer 1:** CUSUM + Hawkes anomaly detection  |  "
+    "**Layer 2:** 3-State HMM (Healthy / Degraded / Broken)  |  "
+    "**Layer 3:** Threshold-gate decisions"
+)
 
-# Sidebar controls
+# Sidebar
 st.sidebar.header("Simulation Controls")
-max_steps = st.sidebar.slider("Max steps", 6, 30, 16, 1)
-seed = st.sidebar.number_input("Random seed", 1, 99999, 137)
-run_button = st.sidebar.button("▶ Run / Re-run Simulation", type="primary")
+max_steps = st.sidebar.slider("Max steps", 6, 40, 20, 1)
+seed = st.sidebar.number_input("Random seed", 1, 99999, 42)
+inject_errors = st.sidebar.checkbox("Inject errors at step 6–7", value=True)
+run_button = st.sidebar.button("Run / Re-run Simulation", type="primary")
 
 if "engine" not in st.session_state or run_button:
-    engine = JudgmentEngine(seed=int(seed))
-    state = {}
-    obs = {"progress_delta": 0.0, "tool_success": True, "error_count_delta": 0, "steps_taken": 0}
+    engine = DecisionEngine(seed=int(seed))
+    state: dict = {}
+    obs: dict = {
+        "tool_ok": True,
+        "progress_delta": 0.0,
+        "has_user_msg": False,
+        "error_count_delta": 0,
+    }
 
-    history = []
-    for step in range(1, max_steps + 1):
-        decision = engine.decide(obs, {"task": "demo"})
+    history: list[dict] = []
+    for step_idx in range(1, max_steps + 1):
+        decision = engine.step(obs)
         outcome = simulate_coding_harness(decision.action, state)
-        obs = outcome
+
+        # Inject errors if enabled
+        if inject_errors:
+            if step_idx == 6 and not outcome.get("task_completed"):
+                outcome["tool_ok"] = False
+                outcome["error_count_delta"] = 1
+                outcome["progress_delta"] = -0.05
+                state["errors"] = state.get("errors", 0) + 1
+            if step_idx == 7 and not outcome.get("task_completed"):
+                outcome["tool_ok"] = False
+                outcome["error_count_delta"] = 1
+                outcome["progress_delta"] = -0.03
+                state["errors"] = state.get("errors", 0) + 1
+
+        diag = decision.layer_diagnostics
+        hawkes_lam = diag["hawkes_intensities"]
+
         history.append({
-            "step": step,
+            "step": step_idx,
             "action": decision.action,
             "confidence": decision.confidence,
-            "trigger": decision.trigger_intensity,
-            "evoi": decision.evoi,
-            "task_success": decision.belief["task_success"],
-            "error_risk": decision.belief["error_risk"],
-            "stuck": decision.belief["stuck"],
+            "P_H": decision.belief["healthy"],
+            "P_D": decision.belief["degraded"],
+            "P_B": decision.belief["broken"],
+            "drift": decision.drift,
+            "anomaly": decision.anomaly,
+            "lam_success": hawkes_lam[0],
+            "lam_error": hawkes_lam[1],
+            "lam_user": hawkes_lam[2],
+            "lam_tool": hawkes_lam[3],
             "progress": outcome.get("progress", 0),
+            "alarms_total": diag["cusum_alarm_count"],
         })
+
+        obs = outcome
         if outcome.get("task_completed"):
             break
 
@@ -59,64 +96,119 @@ if "engine" not in st.session_state or run_button:
     st.session_state.history = history
     st.session_state.df = pd.DataFrame(history)
 
-df = st.session_state.df
+# Guard: first load — nothing to show yet
+if "df" not in st.session_state:
+    st.info("Click **Run / Re-run Simulation** in the sidebar to start.")
+    st.stop()
 
+df: pd.DataFrame = st.session_state.df
+
+# ---- Row 1: Belief + Drift ----
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Belief Evolution (Bayesian)")
-    fig, ax = plt.subplots(figsize=(8, 3.5))
-    ax.plot(df["step"], df["task_success"], label="P(task_success)", linewidth=2)
-    ax.plot(df["step"], df["error_risk"], label="P(error_risk)", linewidth=2)
-    ax.plot(df["step"], df["stuck"], label="P(stuck)", linewidth=2)
+    st.subheader("HMM Belief Evolution (Layer 2)")
+    fig, ax = plt.subplots(figsize=(8, 3.8))
+    ax.plot(df["step"], df["P_H"], label="P(Healthy)", linewidth=2, color="#2ecc71")
+    ax.plot(df["step"], df["P_D"], label="P(Degraded)", linewidth=2, color="#f39c12")
+    ax.plot(df["step"], df["P_B"], label="P(Broken)", linewidth=2, color="#e74c3c")
+    # Threshold references
+    ax.axhline(0.45, color="#e74c3c", linestyle="--", alpha=0.5, linewidth=1, label="θ_B=0.45")
+    ax.axhline(0.35, color="#f39c12", linestyle="--", alpha=0.5, linewidth=1, label="θ_D=0.35")
     ax.set_xlabel("Step")
     ax.set_ylabel("Probability")
-    ax.legend(loc="upper right")
+    ax.set_ylim(0, 1)
+    ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, alpha=0.3)
     st.pyplot(fig)
 
 with col2:
-    st.subheader("Trigger Intensity (Hawkes Process)")
-    fig, ax = plt.subplots(figsize=(8, 3.5))
-    ax.plot(df["step"], df["trigger"], color="#e74c3c", linewidth=2.5, label="Trigger intensity")
-    ax.axhline(1.0, color="gray", linestyle="--", alpha=0.6, label="baseline")
-    ax.fill_between(df["step"], 0, df["trigger"], alpha=0.15, color="#e74c3c")
+    st.subheader("CUSUM Drift + Alarms (Layer 1)")
+    fig, ax = plt.subplots(figsize=(8, 3.8))
+    ax.plot(df["step"], df["drift"], color="#3498db", linewidth=2, label="Drift S_t")
+    ax.axhline(4.0, color="#e74c3c", linestyle="--", alpha=0.6, linewidth=1.5, label="Threshold h=4.0")
+    # Mark alarm points
+    alarm_mask = df["anomaly"] == True
+    if alarm_mask.any():
+        ax.scatter(
+            df.loc[alarm_mask, "step"],
+            df.loc[alarm_mask, "drift"],
+            color="#e74c3c", s=100, marker="x", linewidths=2.5, zorder=5,
+            label=f"Alarms ({alarm_mask.sum()})",
+        )
     ax.set_xlabel("Step")
-    ax.set_ylabel("λ(t)")
-    ax.legend()
+    ax.set_ylabel("Cumulative drift S")
+    ax.legend(loc="upper left", fontsize=8)
     ax.grid(True, alpha=0.3)
     st.pyplot(fig)
 
-st.subheader("Actions & Value Metrics")
+# ---- Row 2: Hawkes + Actions ----
+col3, col4 = st.columns(2)
 
-fig, ax = plt.subplots(figsize=(10, 3.8))
-colors = {"think": "#3498db", "read_file": "#9b59b6", "edit_code": "#2ecc71",
-          "run_tests": "#e67e22", "verify": "#1abc9c", "escalate_to_user": "#e74c3c"}
-for act in df["action"].unique():
-    mask = df["action"] == act
-    ax.scatter(df.loc[mask, "step"], df.loc[mask, "evoi"],
-               s=90, label=act, c=colors.get(act, "gray"), alpha=0.85, edgecolors="black", linewidths=0.5)
-ax.set_xlabel("Step")
-ax.set_ylabel("EVOI of chosen action")
-ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=9)
-ax.grid(True, alpha=0.3)
-st.pyplot(fig)
+with col3:
+    st.subheader("Hawkes Per-Type Intensities")
+    fig, ax = plt.subplots(figsize=(8, 3.5))
+    ax.plot(df["step"], df["lam_tool"], label="λ_tool", linewidth=1.5, color="#9b59b6")
+    ax.plot(df["step"], df["lam_error"], label="λ_error", linewidth=1.5, color="#e74c3c")
+    ax.plot(df["step"], df["lam_success"], label="λ_success", linewidth=1.5, color="#2ecc71")
+    ax.plot(df["step"], df["lam_user"], label="λ_user", linewidth=1.5, color="#3498db")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Intensity λ_d(t)")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    st.pyplot(fig)
 
-# Decision table
-st.subheader("Decision Trace")
+with col4:
+    st.subheader("Decision Trace (Layer 3)")
+    fig, ax = plt.subplots(figsize=(8, 3.5))
+    action_colors = {
+        "continue": "#2ecc71",
+        "correct": "#f39c12",
+        "escalate": "#e74c3c",
+        "gather": "#3498db",
+    }
+    for act in df["action"].unique():
+        mask = df["action"] == act
+        ax.scatter(
+            df.loc[mask, "step"],
+            [1.0] * mask.sum(),
+            s=120,
+            label=act,
+            c=action_colors.get(act, "gray"),
+            alpha=0.85,
+            edgecolors="black",
+            linewidths=0.5,
+            marker="s",
+        )
+    ax.set_xlabel("Step")
+    ax.set_yticks([])
+    ax.set_ylim(0.5, 1.5)
+    ax.legend(loc="upper right", fontsize=8, ncol=4)
+    ax.grid(True, alpha=0.3, axis="x")
+    st.pyplot(fig)
+
+# ---- Table ----
+st.subheader("Detailed Trace")
 st.dataframe(
-    df[["step", "action", "confidence", "trigger", "evoi", "task_success", "error_risk", "progress"]].style.format({
-        "confidence": "{:.2f}",
-        "trigger": "{:.2f}",
-        "evoi": "{:.2f}",
-        "task_success": "{:.2f}",
-        "error_risk": "{:.2f}",
+    df[[
+        "step", "action", "confidence", "P_H", "P_D", "P_B",
+        "drift", "anomaly", "progress",
+    ]].style.format({
+        "confidence": "{:.3f}",
+        "P_H": "{:.3f}",
+        "P_D": "{:.3f}",
+        "P_B": "{:.3f}",
+        "drift": "{:.3f}",
         "progress": "{:.2f}",
     }),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
+# Footer
 st.markdown("---")
-st.caption("This dashboard visualizes how stochastic processes + Bayesian updating + information-theoretic action selection + control theory produce stable, non-heuristic agent decisions.")
-st.caption("Target use case: plug the JudgmentEngine into DeepSeek-style or other production Harnesses.")
+st.caption(
+    "3-layer architecture: CUSUM (Page 1954) + HMM Forward (Rabiner 1989) + "
+    "Hawkes baseline (Hawkes 1971). Each layer has a citable mathematical "
+    "foundation — no heuristic-only decision making."
+)
