@@ -1,0 +1,31 @@
+[project]
+name = "math-harness-judgment"
+version = "0.1.0"
+description = "Mathematically rigorous Judgment Engine for AI Agent Harnesses (Hawkes, Bayesian, EVOI, Control Theory)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+  {name = "Your Name"}
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dashboard = [
+    "streamlit>=1.28",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+include = ["core*", "harness_integration*"]
+
+[project.scripts]
+math-harness-demo = "examples.coding_agent_demo:main"
