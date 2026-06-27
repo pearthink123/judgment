@@ -17,7 +17,10 @@ References:
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .emission import EmissionModel
 
 # ---------------------------------------------------------------------------
 # State constants
@@ -203,11 +206,13 @@ class HiddenMarkovModel:
     Parameters
     ----------
     prior : np.ndarray, shape (3,)
-        Initial state distribution π_s = P(S₁ = s).
     transition : np.ndarray, shape (3, 3)
-        State transition matrix T[s_from][s_to].
     emission_tables : dict
-        {dim: np.ndarray of shape (3, n_cats)}.
+        {dim: np.ndarray of shape (3, n_cats)} — for discrete mode.
+    emission_model : EmissionModel or None
+        Pluggable observation model.  If None, DiscreteEmission with the
+        provided tables is used.  Pass ContinuousEmission() for
+        Gaussian/Poisson/Bernoulli PDFs instead of table lookup.
     """
 
     def __init__(
@@ -215,9 +220,21 @@ class HiddenMarkovModel:
         prior: Optional[np.ndarray] = None,
         transition: Optional[np.ndarray] = None,
         emission_tables: Optional[Dict[int, np.ndarray]] = None,
+        emission_model: Optional[Any] = None,  # EmissionModel
     ):
         self.prior = prior.copy() if prior is not None else DEFAULT_PRIOR.copy()
         self.T = transition.copy() if transition is not None else DEFAULT_TRANSITION.copy()
+
+        # Build emission model
+        if emission_model is not None:
+            self._emission_model = emission_model
+        else:
+            # Default: discrete table lookup
+            from .emission import DiscreteEmission
+            tables = emission_tables if emission_tables is not None else EMISSION_TABLES
+            self._emission_model = DiscreteEmission({k: v.copy() for k, v in tables.items()})
+
+        # Also keep B for backward compat + Baum-Welch (still needs discrete tables)
         self.B = (
             {k: v.copy() for k, v in emission_tables.items()}
             if emission_tables is not None
@@ -238,8 +255,8 @@ class HiddenMarkovModel:
         }
 
         # Running state
-        self.log_alpha: Optional[np.ndarray] = None   # current forward messages
-        self.t: int = 0                                 # step counter
+        self.log_alpha: Optional[np.ndarray] = None
+        self.t: int = 0
 
     # ------------------------------------------------------------------
     # Observation log-likelihood (product model with independence assumption)
@@ -257,12 +274,9 @@ class HiddenMarkovModel:
         """
         return self._log_obs_likelihood(obs_cats)
 
-    def _log_obs_likelihood(self, obs_cats: Dict[int, int]) -> np.ndarray:
-        """Internal implementation — see log_obs_likelihood."""
-        log_lik = np.zeros(N_STATES, dtype=np.float64)
-        for dim, cat in obs_cats.items():
-            log_lik += self.log_B[dim][:, cat]
-        return log_lik
+    def _log_obs_likelihood(self, obs_cats: Dict[int, Any]) -> np.ndarray:
+        """Internal — delegates to emission model."""
+        return self._emission_model.log_prob(obs_cats)
 
     # ------------------------------------------------------------------
     # Forward step (online filter)
