@@ -164,6 +164,7 @@ class TestContentSignalExtractor:
             use_pomcp=True, use_fast_pomcp=False, use_content_signals=True,
             pomcp_n_simulations=300, seed=42,
         )
+        solvers_seen = set()
         for _ in range(5):
             obs = {
                 "tool_ok": True,
@@ -174,4 +175,6 @@ class TestContentSignalExtractor:
             }
             decision = engine.step(obs)
             assert decision.content_signals is not None
-            assert decision.layer_diagnostics["solver"] == "pomcp"
+            solvers_seen.add(decision.layer_diagnostics["solver"])
+        # First step uses POMCP, subsequent steps use threshold fast-path
+        assert "pomcp" in solvers_seen, f"Expected at least one pomcp step, got {solvers_seen}"

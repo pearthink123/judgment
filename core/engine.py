@@ -167,6 +167,9 @@ class DecisionEngine:
         # ---- Corrective router ----
         self.corrective = CorrectiveRouter() if use_corrective else None
 
+        # ---- Entropy threshold for solver fast-path ----
+        self._entropy_threshold = 0.40  # skip solver when belief is sharp (~80%+ in one state)
+
         # ---- Threshold fallback ----
         self.theta_broken = 0.45
         self.theta_degraded = 0.35
@@ -260,11 +263,36 @@ class DecisionEngine:
 
         # ==================================================================
         # LAYER 3: Action selection
+        #   If belief is sharply peaked (low entropy) and no anomaly:
+        #     → fast path: threshold gate (<100us)
+        #   Otherwise:
+        #     → POMDP solver (~25ms for FastPOMCP, <1ms for grid)
         # ==================================================================
         pomcp_info: Optional[POMCPSearchInfo] = None
         q_vals: Dict[str, float] = {}
 
-        if self._pomcp is not None:
+        # --- Compute belief entropy: -Σ b·log(b) ---
+        b_clipped = np.clip(belief_perturbed, 1e-8, 1.0)
+        belief_entropy = -float(np.sum(b_clipped * np.log(b_clipped)))
+
+        # Max entropy for 3 states = log(3) ≈ 1.099
+        # Skip solver when belief is confident (entropy < 0.40, ~80%+ mass on one state)
+        # and there's no anomaly signal.
+        skip_solver = (
+            belief_entropy < self._entropy_threshold
+            and not anomaly
+            and self.prev_action is not None  # only skip after first step
+        )
+
+        if skip_solver:
+            # Fast path — threshold gate from confident belief
+            p_h = float(belief_perturbed[STATE_HEALTHY])
+            p_d = float(belief_perturbed[STATE_DEGRADED])
+            p_b = float(belief_perturbed[STATE_BROKEN])
+            raw_action = self._gate(p_h, p_d, p_b)
+            action = self._hysteresis(raw_action, belief_perturbed)
+            q_vals = {}
+        elif self._pomcp is not None:
             # --- POMCP: online particle MCTS ---
             pomdp_action_idx = self._pomcp.search(belief_perturbed)
             raw_action = _POMDP_TO_ACTION[pomdp_action_idx]
@@ -325,7 +353,8 @@ class DecisionEngine:
             "most_likely_state": STATE_NAMES[self.hmm.most_likely_state()],
             "pomdp_q_values": q_vals,
             "solver": (
-                "fast_pomcp" if (self._pomcp is not None and self.use_fast_pomcp)
+                "threshold" if skip_solver
+                else "fast_pomcp" if (self._pomcp is not None and self.use_fast_pomcp)
                 else "pomcp" if self._pomcp is not None
                 else "grid" if self._policy is not None
                 else "threshold"
