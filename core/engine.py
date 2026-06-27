@@ -45,6 +45,7 @@ from .pomdp import (
     ACTION_NAMES_POMDP,
 )
 from .pomcp import POMCPPlanner, POMCPSearchInfo
+from .pomcp_fast import FastPOMCPPlanner, FastSearchInfo
 from .content_signals import ContentSignalExtractor
 
 
@@ -89,14 +90,16 @@ class DecisionEngine:
     """
     3-layer math-driven decision engine.
 
-    Layer 3 has three modes (auto-selected):
-      1. POMCP — online particle MCTS (use_pomcp=True)
-      2. Grid value iteration — 231-point exact solve (use_pomdp=True, default)
-      3. Threshold gate — fallback
+    Layer 3 has four modes (auto-selected):
+      1. FastPOMCP — batch-pre-sampled MCTS, ~10x faster (use_fast_pomcp=True)
+      2. POMCP — recursive MCTS (use_pomcp=True)
+      3. Grid value iteration — 231-point exact solve (use_pomdp=True, default)
+      4. Threshold gate — fallback
 
     Parameters
     ----------
     use_pomcp : bool — use online MCTS instead of grid lookup.
+    use_fast_pomcp : bool — use batch-optimised MCTS (~10x faster than POMCP).
     use_content_signals : bool — extract content-quality metrics from llm_text.
     pomcp_n_simulations, pomcp_n_particles : int — POMCP budget.
     """
@@ -109,6 +112,7 @@ class DecisionEngine:
         reward: Optional[RewardConfig] = None,
         use_pomdp: bool = True,
         use_pomcp: bool = False,
+        use_fast_pomcp: bool = False,
         use_corrective: bool = True,
         use_content_signals: bool = False,
         pomdp_resolution: float = 0.05,
@@ -123,6 +127,7 @@ class DecisionEngine:
 
         self.use_pomdp = use_pomdp
         self.use_pomcp = use_pomcp
+        self.use_fast_pomcp = use_fast_pomcp
         self.use_corrective = use_corrective
         self.use_content_signals = use_content_signals
 
@@ -141,10 +146,17 @@ class DecisionEngine:
                 self._policy = None
 
         # ---- POMCP solver (online MCTS) ----
-        self._pomcp: Optional[POMCPPlanner] = None
+        self._pomcp: Any = None  # POMCPPlanner or FastPOMCPPlanner
         self._pomcp_simulations = pomcp_n_simulations
         self._pomcp_particles = pomcp_n_particles
-        if use_pomcp:
+        if use_fast_pomcp:
+            self._pomcp = FastPOMCPPlanner(
+                reward_config=reward,
+                n_simulations=pomcp_n_simulations,
+                n_particles=pomcp_n_particles,
+                rng=self.rng,
+            )
+        elif use_pomcp:
             self._pomcp = POMCPPlanner(
                 reward_config=reward,
                 n_simulations=pomcp_n_simulations,
@@ -313,7 +325,8 @@ class DecisionEngine:
             "most_likely_state": STATE_NAMES[self.hmm.most_likely_state()],
             "pomdp_q_values": q_vals,
             "solver": (
-                "pomcp" if self._pomcp is not None
+                "fast_pomcp" if (self._pomcp is not None and self.use_fast_pomcp)
+                else "pomcp" if self._pomcp is not None
                 else "grid" if self._policy is not None
                 else "threshold"
             ),

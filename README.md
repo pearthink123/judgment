@@ -84,7 +84,8 @@ judgment/
 | CUSUM + Hawkes | Page (1954) + Hawkes (1971) | Detects observation drift; Hawkes corrects for expected event clustering |
 | HMM Forward | Rabiner (1989) | Infers hidden health state (H/D/B) from noisy structural + content signals |
 | POMCP (online MCTS) | Silver & Veness (2010) | Scalable online POMDP solving — particle-based UCT, no grid discretisation |
-| Grid POMDP | Kaelbling et al. (1998) | Exact value iteration on 231-point simplex (fast fallback for 3-state case) |
+| FastPOMCP | Batch-pre-sampled MCTS | **9-37× faster** than baseline POMCP (24ms vs 900ms at 2000 sims); early-stopping reduces wasted rollouts |
+| Grid POMDP | Kaelbling et al. (1998) | Exact value iteration on 231-point simplex (1ms per decision, fastest option for 3-state case) |
 | Content Signals | Heuristic (lightweight) | Detects LLM derailment from text output: length anomaly, repetition, self-contradiction |
 | Corrective Router | Heuristic (explicitly labelled) | Maps CORRECT signal to concrete advice (verify/rethink/retry/rollback) |
 | Baum-Welch (EM) | Rabiner (1989) §III-C | Learns HMM parameters from agent run logs; semi-supervised mode |
