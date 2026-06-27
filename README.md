@@ -67,6 +67,10 @@ judgment/
 │   ├── hawkes-redesign.md
 │   └── three-gaps-design.md
 ├── tests/                 # 139 tests, all passing
+├── scripts/
+│   ├── benchmark.py        # Detection performance benchmark
+│   ├── eval_runner.py      # Head-to-head: baseline vs judgment
+│   └── fault_models.py     # 4 realistic degradation patterns
 ├── pyproject.toml
 └── README.md
 ```
@@ -189,18 +193,46 @@ graph.add_conditional_edges(
 
 See `examples/langgraph_agent.py` for a complete runnable example (no LangGraph install required).
 
+## Benchmarks
+
+Head-to-head evaluation on 250 synthetic trajectories across 5 fault models (context drift, tool degradation, loop trap, catastrophic cascade, healthy baseline). Full results: `scripts/eval_results.json`.
+
+| Metric | Baseline | Judgment | Meaning |
+|---|---|---|---|
+| **Waste ratio** (failure tasks) | 100% | **39%** | Judgment stops broken runs 61% earlier |
+| Catastrophic cascade recall | — | **100%** | Instant detection (1.1 step delay) |
+| Detection precision | — | **74.6%** | 3/4 alarms are real faults |
+| False escalation rate | — | 8.0% | Healthy runs incorrectly interrupted |
+| Mean progress (all tasks) | 0.60 | **0.77** | +28% improvement |
+
+**Key takeaway**: judgment's purpose is not to increase success rate — it's to *stop wasting steps on doomed trajectories*. On that metric it delivers a 61% reduction. The 8% false escalation rate can be tuned by adjusting the CUSUM threshold `h`.
+
+```bash
+# Run the evaluation yourself
+python scripts/eval_runner.py --trajectories-per-model 25 --max-steps 30
+
+# Compare grid vs POMCP solver
+python scripts/benchmark.py --trajectories 100 --compare
+```
+
 ## What This Is Not
 
 - **Not a replacement for ReAct / LangGraph / CrewAI.** The engine is a *critic* that watches the execution loop and decides when to intervene. The harness loop (`JudgmentHarness`) wraps an LLM executor with math-driven oversight.
 - **Not a learning system (yet).** Baum-Welch can learn HMM parameters from logs, but the POMDP reward function must be configured, not learned.
-- **Not a content-quality judge.** The HMM cares about structural health signals (tool success rate, progress, error trend), not whether the LLM's output text is correct.
+- **Not a content-quality judge.** The HMM includes structural health signals and lightweight content metrics (length anomaly, repetition), but it does not evaluate the semantic correctness or factuality of LLM outputs.
 
 ## Roadmap
 
-- POMDP reward learning from annotated trajectories
-- LangGraph adapter (drop-in decision node)
-- Multi-agent health monitoring (one engine per agent, shared HMM)
-- Streaming observation model (replace discrete categories with continuous soft signals)
+- [x] LangGraph adapter (drop-in node + conditional-edge router)
+- [x] Content-quality signals (length, novelty, negation — no embedding deps)
+- [x] POMCP online MCTS (scalable alternative to grid value iteration)
+- [x] Baum-Welch HMM parameter learning from agent run logs
+- [x] Evaluation benchmark suite (5 fault models, head-to-head vs baseline)
+- [ ] CrewAI / AutoGen adapters
+- [ ] POMDP reward learning from annotated trajectories
+- [ ] Multi-agent health monitoring (one engine per agent, shared HMM)
+- [ ] Real benchmark integration (GAIA / SWE-bench / WebArena)
+- [ ] Streaming observation model (continuous, not discrete categories)
 
 ## License
 
