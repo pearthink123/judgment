@@ -7,6 +7,27 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run ruff
+        run: ruff check core/ harness/ integration/ observability/ cli/
+
+      - name: Run mypy
+        run: mypy core/ --ignore-missing-imports --follow-imports=skip || true
+
   test:
     runs-on: ubuntu-latest
     strategy:
