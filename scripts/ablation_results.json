@@ -1,0 +1,84 @@
+[
+  {
+    "config_name": "A: HMM+threshold",
+    "n_trajectories": 75,
+    "success_rate": 0.56,
+    "waste_ratio": 0.3212,
+    "detection_recall": 0.0,
+    "detection_precision": 0.0,
+    "mean_detection_delay": NaN,
+    "false_escalation_rate": 0.0,
+    "mean_steps": 8.36,
+    "action_distribution": {
+      "continue": 577,
+      "correct": 17,
+      "escalate": 33
+    }
+  },
+  {
+    "config_name": "B: +CUSUM",
+    "n_trajectories": 75,
+    "success_rate": 0.56,
+    "waste_ratio": 0.3071,
+    "detection_recall": 0.3333,
+    "detection_precision": 0.6667,
+    "mean_detection_delay": 1.55,
+    "false_escalation_rate": 0.0,
+    "mean_steps": 8.1733,
+    "action_distribution": {
+      "correct": 27,
+      "continue": 553,
+      "escalate": 33
+    }
+  },
+  {
+    "config_name": "C: +POMDP(grid)",
+    "n_trajectories": 75,
+    "success_rate": 0.6667,
+    "waste_ratio": 0.3253,
+    "detection_recall": 0.4667,
+    "detection_precision": 0.8235,
+    "mean_detection_delay": 3.8571,
+    "false_escalation_rate": 0.0,
+    "mean_steps": 8.6267,
+    "action_distribution": {
+      "continue": 596,
+      "correct": 26,
+      "escalate": 25
+    }
+  },
+  {
+    "config_name": "D: +FastPOMCP",
+    "n_trajectories": 75,
+    "success_rate": 0.6267,
+    "waste_ratio": 0.3298,
+    "detection_recall": 0.4167,
+    "detection_precision": 0.8929,
+    "mean_detection_delay": 3.2,
+    "false_escalation_rate": 0.0,
+    "mean_steps": 8.4533,
+    "action_distribution": {
+      "continue": 511,
+      "gather": 58,
+      "correct": 37,
+      "escalate": 28
+    }
+  },
+  {
+    "config_name": "E: full stack",
+    "n_trajectories": 75,
+    "success_rate": 0.64,
+    "waste_ratio": 0.3272,
+    "detection_recall": 0.4167,
+    "detection_precision": 0.9655,
+    "mean_detection_delay": 4.88,
+    "false_escalation_rate": 0.0,
+    "mean_steps": 8.9067,
+    "action_distribution": {
+      "continue": 538,
+      "correct": 52,
+      "gather": 52,
+      "escalate": 26
+    }
+  }
+]
