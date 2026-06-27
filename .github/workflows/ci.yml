@@ -29,9 +29,6 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
 
-      - name: Check import
-        run: python -c "from judgment import DecisionEngine; print('import OK')"
-
   benchmark:
     runs-on: ubuntu-latest
     needs: test
