@@ -50,7 +50,9 @@ judgment/
 │   └── diagnostics.py     # Structured diagnostic outputs
 ├── integration/
 │   ├── base.py            # Abstract adapter protocol
-│   └── langgraph.py       # LangGraph node + conditional-edge router
+│   ├── langgraph.py       # LangGraph node + conditional-edge router
+│   ├── crewai.py          # CrewAI step callback + health-check tool + wrapper
+│   └── custom.py          # Generic adapter — wrap_step decorator + judgment_guard
 ├── harness/
 │   ├── loop.py            # JudgmentHarness: unified execution loop
 │   ├── executor.py        # LLMExecutor (OpenAI-compat) + SimulatedExecutor
@@ -66,7 +68,7 @@ judgment/
 │   ├── architecture-redesign.md
 │   ├── hawkes-redesign.md
 │   └── three-gaps-design.md
-├── tests/                 # 139 tests, all passing
+├── tests/                 # 158 tests, all passing
 ├── scripts/
 │   ├── benchmark.py        # Detection performance benchmark
 │   ├── eval_runner.py      # Head-to-head: baseline vs judgment
@@ -192,6 +194,65 @@ graph.add_conditional_edges(
 ```
 
 See `examples/langgraph_agent.py` for a complete runnable example (no LangGraph install required).
+
+## CrewAI Integration
+
+Monitor CrewAI agents with a step callback or health-check tool:
+
+```python
+from judgment.integration.crewai import (
+    create_judgment_callback, create_tool_wrapper,
+)
+from judgment import DecisionEngine
+
+engine = DecisionEngine()
+
+# Option 1: step callback (runs after each agent step)
+callback = create_judgment_callback(engine, verbose=True)
+agent = Agent(role="Developer", step_callback=callback, ...)
+
+# Option 2: tool wrapper (call from inside your tool's _run method)
+observe = create_tool_wrapper(engine)
+
+class MyTool(BaseTool):
+    def _run(self, **kwargs) -> str:
+        result = do_work()
+        action = observe("my_tool", ok=True, progress=0.1, errors=0)
+        if action == "escalate":
+            return "[ESCALATE] Stopping — agent health critical."
+        return result
+```
+
+## Custom / Any Loop
+
+Add judgment to any Agent loop with one decorator or context manager:
+
+```python
+from judgment.integration.custom import wrap_step, judgment_guard, quick_check
+from judgment import DecisionEngine
+
+engine = DecisionEngine()
+
+# Decorator — auto-injects judgment after each step
+@wrap_step(engine)
+def agent_step(state):
+    return {"tool_ok": True, "progress_delta": 0.12, "error_count_delta": 0}
+
+result, decision = agent_step(state)
+if decision.action == "escalate":
+    return  # stop
+
+# Context manager — explicit check in any loop
+with judgment_guard(engine) as check:
+    for obs in your_loop:
+        action = check(obs)
+        if action == "escalate":
+            print(check.last_advice.summary)
+            break
+
+# One-liner — simplest possible integration
+action = quick_check(engine, tool_ok=True, progress_delta=0.1)
+```
 
 ## Benchmarks
 
