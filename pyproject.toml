@@ -38,6 +38,9 @@ llm = [
 anthropic = [
     "anthropic>=0.30",
 ]
+semantic = [
+    "sentence-transformers>=2.0",
+]
 dev = [
     "pytest",
     "ruff",

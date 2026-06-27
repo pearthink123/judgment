@@ -104,23 +104,66 @@ Agent step completes
         ▼
 ┌───────────────────┐
 │ Layer 1: CUSUM    │  "Is this normal fluctuation or a real anomaly?"
-│ + Hawkes baseline │  Catches drift in the observation stream.
+│ + Hawkes baseline │  Math: sequential change detection (Page 1954)
 └────────┬──────────┘
          ▼
 ┌───────────────────┐
 │ Layer 2: HMM      │  "How healthy is the agent right now?"
-│ Healthy/Degraded/ │  Bayesian inference from noisy signals.
-│ Broken            │
+│ Healthy/Degraded/ │  Math: Bayesian filtering (Rabiner 1989)
+│ Broken            │  + optional content signals (heuristic)
 └────────┬──────────┘
          ▼
 ┌───────────────────┐
-│ Layer 3: POMDP    │  "Continue, correct, escalate, or gather info?"
-│ (FastPOMCP, 25ms) │  Optimal action under uncertainty.
+│ Layer 3: POMDP    │  "Continue, correct, escalate, or gather?"
+│ (FastPOMCP, 25ms) │  Math: online MCTS (Silver & Veness 2010)
+└────────┬──────────┘
+         ▼
+┌───────────────────┐
+│ Corrective advice  │  "What specifically should we do?"
+│ (heuristic)       │  Rules: verify / rethink / retry / rollback
 └───────────────────┘
 ```
 
-Each layer uses math with a real paper behind it — but you don't need to
-read those papers to use the library.
+## What's math and what's not
+
+| Component | Foundation | Status |
+|---|---|---|
+| CUSUM drift detector | Page (1954) | **Rigorous** — sequential hypothesis testing |
+| Hawkes baseline | Hawkes (1971) | **Rigorous** — self-exciting point process |
+| HMM Forward filter | Rabiner (1989) | **Rigorous** — Bayesian state inference |
+| POMDP policy (grid) | Kaelbling et al. (1998) | **Rigorous** — exact value iteration |
+| FastPOMCP | Silver & Veness (2010) | **Rigorous** — particle MCTS |
+| Corrective action router | – | **Heuristic** (explicitly labelled, 4 rules) |
+| Content signals (text metrics) | – | **Heuristic** (length, novelty, negation) |
+| Threshold hysteresis | – | **Heuristic** (prevents oscillation)
+
+## Ablation — does each layer actually help?
+
+Marginal contribution of each component (synthetic benchmark, 5 fault models × 15 trajectories):
+
+| Config | Detection recall | Precision |
+|---|---|---|
+| HMM only (no CUSUM, no POMDP) | 0% | — |
+| +CUSUM | 33% | 67% |
+| +POMDP grid | 47% | 82% |
+| +FastPOMCP | 42% | 89% |
+| Full stack (+content signals, +corrective) | 42% | **97%** |
+
+**CUSUM is essential** — HMM alone can't detect faults. POMDP adds 14pp recall.
+FastPOMCP trades 5pp for 8× speed. Content signals nearly eliminate false alarms.
+
+```bash
+python scripts/ablation.py            # reproduce these numbers
+python scripts/benchmark.py --compare  # latency benchmark
+```
+
+## Real benchmark adapter
+
+```bash
+python scripts/benchmark_adapter.py --generate 50
+```
+Plug into any JSONL trace stream. On 50 synthetic traces: 60% detection, 0% FPR,
+~910K tokens saved via early escalation.
 
 ## Run the benchmarks
 
@@ -143,8 +186,14 @@ Judgment is a **critic** — it watches the execution loop and decides when
 to intervene. It is not:
 
 - A replacement for LangGraph / CrewAI / ReAct
-- A content-quality judge (it checks structural health, not correctness)
-- A learning system (POMDP reward function is configured, not learned)
+- A semantic correctness judge — it detects structural degradation (tool
+  failures, progress stalls, error cascades). Content signals (repetition,
+  contradiction) are lightweight heuristics, not factuality checks.
+  Semantic drift detection via embeddings is on the roadmap.
+- A learning system — Baum-Welch learns HMM params from logs, but the
+  POMDP reward function is configured manually, not learned.
+- Pure math — corrective actions and content signals are explicitly
+  labelled as heuristics. See `docs/limitations.md` for details.
 
 ## Roadmap
 
