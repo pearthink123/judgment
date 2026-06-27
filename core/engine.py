@@ -47,6 +47,7 @@ from .pomdp import (
 from .pomcp import POMCPPlanner, POMCPSearchInfo
 from .pomcp_fast import FastPOMCPPlanner, FastSearchInfo
 from .content_signals import ContentSignalExtractor
+from .config import EngineConfig
 
 
 # ---------------------------------------------------------------------------
@@ -96,13 +97,28 @@ class DecisionEngine:
       3. Grid value iteration — 231-point exact solve (use_pomdp=True, default)
       4. Threshold gate — fallback
 
-    Parameters
-    ----------
-    use_pomcp : bool — use online MCTS instead of grid lookup.
-    use_fast_pomcp : bool — use batch-optimised MCTS (~10x faster than POMCP).
-    use_content_signals : bool — extract content-quality metrics from llm_text.
-    pomcp_n_simulations, pomcp_n_particles : int — POMCP budget.
+    Configuration: use ``EngineConfig.preset("conservative")`` or
+    ``DecisionEngine.from_config(cfg)``. Entropy fast-path skips
+    the expensive solver when belief is sharply peaked.
     """
+
+    @classmethod
+    def from_config(cls, cfg: EngineConfig, **overrides) -> "DecisionEngine":
+        """Create an engine from an EngineConfig object. Accepts keyword overrides."""
+        for k, v in overrides.items():
+            setattr(cfg, k, v)
+        return cls(
+            reward=cfg.reward,
+            use_pomdp=cfg.use_pomdp,
+            use_pomcp=cfg.use_pomcp,
+            use_fast_pomcp=cfg.use_fast_pomcp,
+            use_corrective=cfg.use_corrective,
+            use_content_signals=cfg.use_content_signals,
+            pomdp_resolution=cfg.pomdp_resolution,
+            pomcp_n_simulations=cfg.pomcp_n_simulations,
+            pomcp_n_particles=cfg.pomcp_n_particles,
+            seed=cfg.seed,
+        )
 
     def __init__(
         self,
