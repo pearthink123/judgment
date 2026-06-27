@@ -254,6 +254,38 @@ class TestEngineResetReproducibility:
         assert len(engine.decision_log) == 0
         assert engine.prev_action is None
 
+    def test_save_load_preserves_belief(self):
+        """After save/load, next step should produce same belief."""
+        engine = DecisionEngine(seed=42)
+        # 5 healthy + 3 error steps
+        for _ in range(5):
+            engine.step({"tool_ok": True, "progress_delta": 0.12, "error_count_delta": 0})
+        for _ in range(3):
+            engine.step({"tool_ok": False, "progress_delta": -0.05, "error_count_delta": 2})
+
+        snap = engine.save_state()
+        engine_restored = DecisionEngine(seed=42)
+        engine_restored.load_state(snap)
+
+        obs = {"tool_ok": True, "progress_delta": 0.1, "error_count_delta": 0}
+        d_orig = engine.step(obs)
+        d_restored = engine_restored.step(obs)
+        # Belief must be identical — that's what the HMM state captures
+        for k in ["healthy", "degraded", "broken"]:
+            assert abs(d_orig.belief[k] - d_restored.belief[k]) < 0.01, (
+                f"{k}: {d_orig.belief[k]} vs {d_restored.belief[k]}"
+            )
+
+    def test_save_load_preserves_prev_action(self):
+        engine = DecisionEngine(seed=42)
+        for _ in range(10):
+            engine.step({"tool_ok": True, "progress_delta": 0.12, "error_count_delta": 0})
+        snap = engine.save_state()
+        engine2 = DecisionEngine(seed=42)
+        engine2.load_state(snap)
+        assert engine2.prev_action == engine.prev_action
+        assert engine2.step_count == engine.step_count
+
     def test_same_seed_reproduces(self):
         e1 = DecisionEngine(seed=42)
         e2 = DecisionEngine(seed=42)

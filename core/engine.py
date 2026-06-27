@@ -511,3 +511,85 @@ class DecisionEngine:
         self.prev_action = None
         self.prev_belief = None
         self.decision_log = []
+
+    # ------------------------------------------------------------------
+    # State persistence — save/load for long-running agents
+    # ------------------------------------------------------------------
+    def save_state(self) -> Dict[str, Any]:
+        """Return a JSON-serialisable snapshot for warm restart."""
+        import json
+        events = []
+        for ev in self.hawkes.events:
+            events.append({
+                "time": ev.time,
+                "event_type": ev.event_type,
+                "mark": ev.mark,
+            })
+
+        log_alpha = None
+        if self.hmm.log_alpha is not None:
+            log_alpha = [float(x) for x in self.hmm.log_alpha]
+
+        lengths = None
+        if self.content_extractor:
+            lengths = list(self.content_extractor._lengths)
+
+        return {
+            "version": "0.2.0",
+            "step_count": self.step_count,
+            "prev_action": self.prev_action,
+            "prev_belief": (
+                [float(x) for x in self.prev_belief]
+                if self.prev_belief is not None else None
+            ),
+            "hmm": {
+                "log_alpha": log_alpha,
+                "t": self.hmm.t,
+            },
+            "hawkes": {
+                "events": events,
+                "current_time": self.hawkes.current_time,
+            },
+            "cusum": {
+                "S": self.cusum.S,
+                "t": self.cusum.t,
+            },
+            "content_lengths": lengths,
+        }
+
+    def load_state(self, snapshot: Dict[str, Any]):
+        """Restore engine from a snapshot produced by save_state()."""
+        self.reset()
+
+        self.step_count = snapshot.get("step_count", 0)
+        self.prev_action = snapshot.get("prev_action")
+        prev = snapshot.get("prev_belief")
+        if prev is not None:
+            self.prev_belief = np.array(prev, dtype=np.float64)
+
+        # HMM
+        hmm_s = snapshot.get("hmm", {})
+        self.hmm.t = hmm_s.get("t", 0)
+        la = hmm_s.get("log_alpha")
+        if la is not None:
+            self.hmm.log_alpha = np.array(la, dtype=np.float64)
+
+        # Hawkes
+        hw_s = snapshot.get("hawkes", {})
+        self.hawkes.reset()
+        self.hawkes.current_time = hw_s.get("current_time", 0.0)
+        for ev in hw_s.get("events", []):
+            self.hawkes.add_event(
+                ev["time"], ev["event_type"], mark=ev["mark"],
+            )
+
+        # CUSUM
+        cu_s = snapshot.get("cusum", {})
+        self.cusum.S = cu_s.get("S", 0.0)
+        self.cusum.t = cu_s.get("t", 0)
+
+        # Content extractor lengths
+        if self.content_extractor:
+            self.content_extractor._lengths.clear()
+            for v in snapshot.get("content_lengths", []) or []:
+                self.content_extractor._lengths.append(v)

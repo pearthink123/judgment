@@ -234,6 +234,8 @@ def main():
     parser.add_argument("--trajectories-per-model", "-n", type=int, default=20)
     parser.add_argument("--max-steps", type=int, default=30)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--repeat", "-r", type=int, default=1,
+                        help="Repeat N times with different seeds for confidence intervals")
     parser.add_argument("--output", "-o", default=None)
     args = parser.parse_args()
 
@@ -246,22 +248,47 @@ def main():
     print("=" * 80)
 
     t0 = time.time()
-    results: List[AblationResult] = []
+    all_seed_results: Dict[str, List[AblationResult]] = {name: [] for name in CONFIGS}
 
-    for config_name, builder in CONFIGS.items():
-        print(f"\n  {config_name}...", end=" ", flush=True)
-        tc = time.time()
-        result = evaluate_config(
-            builder, config_name, fault_modes,
-            args.trajectories_per_model, args.max_steps, args.seed,
+    for repeat_i in range(args.repeat):
+        rep_seed = args.seed + repeat_i * 10000
+        if args.repeat > 1:
+            print(f"\n  -- repeat {repeat_i+1}/{args.repeat} (seed={rep_seed}) --")
+
+        for config_name, builder in CONFIGS.items():
+            if args.repeat > 1:
+                print(f"    {config_name}...", end=" ", flush=True)
+            else:
+                print(f"\n  {config_name}...", end=" ", flush=True)
+            tc = time.time()
+            result = evaluate_config(
+                builder, config_name, fault_modes,
+                args.trajectories_per_model, args.max_steps, rep_seed,
+            )
+            elapsed_c = time.time() - tc
+            all_seed_results[config_name].append(result)
+            print(f"recall={result.detection_recall:.2f}  "
+                  f"waste={result.waste_ratio:.2f}  "
+                  f"({elapsed_c:.1f}s)")
+
+    # Average across repeats
+    results: List[AblationResult] = []
+    for config_name in CONFIGS:
+        runs = all_seed_results[config_name]
+        # Average the key metrics
+        avg = AblationResult(
+            config_name=config_name,
+            n_trajectories=runs[0].n_trajectories,
+            success_rate=float(np.mean([r.success_rate for r in runs])),
+            waste_ratio=float(np.mean([r.waste_ratio for r in runs])),
+            detection_recall=float(np.mean([r.detection_recall for r in runs])),
+            detection_precision=float(np.mean([r.detection_precision for r in runs])),
+            mean_detection_delay=float(np.mean([r.mean_detection_delay for r in runs])),
+            false_escalation_rate=float(np.mean([r.false_escalation_rate for r in runs])),
+            mean_steps=float(np.mean([r.mean_steps for r in runs])),
+            action_distribution=runs[0].action_distribution,
         )
-        elapsed_c = time.time() - tc
-        results.append(result)
-        print(f"recall={result.detection_recall:.2f}  "
-              f"FPR={result.false_escalation_rate:.2f}  "
-              f"waste={result.waste_ratio:.2f}  "
-              f"delay={result.mean_detection_delay:.1f}s  "
-              f"({elapsed_c:.1f}s)")
+        results.append(avg)
 
     total_time = time.time() - t0
 
