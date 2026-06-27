@@ -110,9 +110,9 @@ class DecisionEngine:
         hawkes: Optional[HawkesProcess] = None,
         cusum: Optional[CUSUMDetector] = None,
         reward: Optional[RewardConfig] = None,
-        use_pomdp: bool = True,
+        use_pomdp: bool = False,
         use_pomcp: bool = False,
-        use_fast_pomcp: bool = False,
+        use_fast_pomcp: bool = True,
         use_corrective: bool = True,
         use_content_signals: bool = False,
         pomdp_resolution: float = 0.05,
@@ -139,7 +139,7 @@ class DecisionEngine:
         # ---- POMDP solver (grid) ----
         self._policy: Optional[POMDPPolicy] = None
         self._pomdp_resolution = pomdp_resolution
-        if use_pomdp and not use_pomcp:
+        if use_pomdp and not use_pomcp and not use_fast_pomcp:
             try:
                 self._policy = get_policy(reward=reward, resolution=pomdp_resolution)
             except Exception:

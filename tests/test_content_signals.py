@@ -145,7 +145,7 @@ class TestContentSignalExtractor:
         """Engine with POMCP solver runs without error."""
         from core.engine import DecisionEngine
 
-        engine = DecisionEngine(use_pomcp=True, seed=42)
+        engine = DecisionEngine(use_pomcp=True, use_fast_pomcp=False, seed=42)
         obs = {
             "tool_ok": True,
             "progress_delta": 0.15,
@@ -161,7 +161,7 @@ class TestContentSignalExtractor:
         from core.engine import DecisionEngine
 
         engine = DecisionEngine(
-            use_pomcp=True, use_content_signals=True,
+            use_pomcp=True, use_fast_pomcp=False, use_content_signals=True,
             pomcp_n_simulations=300, seed=42,
         )
         for _ in range(5):
