@@ -47,3 +47,10 @@ __pycache__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated data
+scripts/eval_results.json
+scripts/benchmark_results.json
+
+# Build artifacts
+build/
