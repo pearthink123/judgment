@@ -180,6 +180,27 @@ python scripts/benchmark.py --trajectories 100 --compare
 Side-by-side: grid POMDP vs FastPOMCP. Includes detection rate, false
 positive rate, median delay, and latency.
 
+## How is this different from X?
+
+| Approach | Fixes bad agent runs by... | Needs config? | Math-based? |
+|---|---|---|---|
+| LangGraph retry | Retrying failed tool calls N times | No | No — fixed count |
+| LLM-as-judge | Prompting another LLM to critique | Prompt engineering | No — vibes |
+| Reflexion | LLM reflects on mistakes, stores in memory | Prompt + memory setup | No |
+| Simple timeout | Killing the loop after N seconds | No | No |
+| **judgment** | Statistical anomaly detection + Bayesian health inference | Yes — obs dict | Yes — CUSUM+HMM+POMDP |
+
+**When to use judgment**: Long-running agent tasks (>10 steps), multi-tool workflows,
+cost-sensitive deployments where wasted tokens = real money.
+**When NOT to use it**: Simple single-call agents, already-short timeouts,
+prototypes where you just want to see if it works.
+
+## Production gotchas
+
+See [`docs/production-gotchas.md`](docs/production-gotchas.md) — covers engine thread-safety,
+CUSUM threshold tuning per domain, `progress_delta` calibration, warm-start behavior,
+POMCP particle/simulation budget, content signal limitations, and monitoring checklist.
+
 ## Project scope
 
 Judgment is a **critic** — it watches the execution loop and decides when
