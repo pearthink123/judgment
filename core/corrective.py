@@ -58,8 +58,17 @@ class CorrectiveRouter:
     def __init__(self):
         pass
 
-    def analyse(self, decision_log: list) -> CorrectiveAdvice:
-        """Examine decision history and produce corrective advice."""
+    def analyse(self, decision_log: list, anthropic_tone: bool = False) -> CorrectiveAdvice:
+        """Examine decision history and produce corrective advice.
+
+        Parameters
+        ----------
+        decision_log : list of Decision
+        anthropic_tone : bool
+            If True, use a constructive, non-judgmental tone aligned with
+            Anthropic's Model Spec — focused on what the agent can improve,
+            not what it did wrong.
+        """
         n = len(decision_log)
         if n == 0:
             return CorrectiveAdvice(
@@ -107,36 +116,77 @@ class CorrectiveRouter:
 
         if consecutive_same and stalled_steps >= 2:
             action_type = CORRECTIVE_ROLLBACK
-            summary = (
-                f"Repeated failures ({recent_failures} in last 5 steps) with "
-                f"stalled progress ({stalled_steps} steps). Consider rollback."
-            )
+            if anthropic_tone:
+                summary = (
+                    f"The last 3 steps have triggered repeated anomaly signals with "
+                    f"{stalled_steps} steps of stalled progress. This pattern often "
+                    f"indicates a compounding issue rather than an isolated failure. "
+                    f"Consider rolling back to the last known-good state and "
+                    f"re-approaching from a different angle."
+                )
+            else:
+                summary = (
+                    f"Repeated failures ({recent_failures} in last 5 steps) with "
+                    f"stalled progress ({stalled_steps} steps). Consider rollback."
+                )
         elif recent_failures >= 2:
             action_type = CORRECTIVE_VERIFY
-            summary = (
-                f"{recent_failures} tool failures in last 5 steps. "
-                f"Verify current state before continuing."
-            )
+            if anthropic_tone:
+                summary = (
+                    f"{recent_failures} tool calls in the last 5 steps did not succeed. "
+                    f"Before continuing, verify that the current output matches "
+                    f"expectations — a quick sanity check now saves downstream rework."
+                )
+            else:
+                summary = (
+                    f"{recent_failures} tool failures in last 5 steps. "
+                    f"Verify current state before continuing."
+                )
         elif stalled_steps >= 5:
             action_type = CORRECTIVE_RETHINK
-            summary = (
-                f"Progress stalled for {stalled_steps} steps. "
-                f"Current approach may not be working — reconsider strategy."
-            )
+            if anthropic_tone:
+                summary = (
+                    f"Progress has been flat for {stalled_steps} steps. The current "
+                    f"approach may be viable but slow — or it may have reached a "
+                    f"ceiling. Step back and ask: is there a fundamentally different way "
+                    f"to achieve the goal? A revised sub-plan might unlock progress."
+                )
+            else:
+                summary = (
+                    f"Progress stalled for {stalled_steps} steps. "
+                    f"Current approach may not be working — reconsider strategy."
+                )
         elif recent_failures == 1:
             action_type = CORRECTIVE_RETRY
-            summary = (
-                "Single isolated failure — retry the last action "
-                "before escalating."
-            )
+            if anthropic_tone:
+                summary = (
+                    "A single tool call failed — this is normal and often transient. "
+                    "Retry the last action once. If it fails again, escalate to "
+                    "verification."
+                )
+            else:
+                summary = (
+                    "Single isolated failure — retry the last action "
+                    "before escalating."
+                )
         else:
             action_type = CORRECTIVE_VERIFY
-            summary = (
-                f"Belief in {dominant} state elevated "
-                f"(H={current_belief.get('healthy', 0):.2f}, "
-                f"D={current_belief.get('degraded', 0):.2f}, "
-                f"B={current_belief.get('broken', 0):.2f}). Verify."
-            )
+            if anthropic_tone:
+                summary = (
+                    f"The engine sees elevated uncertainty in agent health "
+                    f"(H={current_belief.get('healthy', 0):.2f}, "
+                    f"D={current_belief.get('degraded', 0):.2f}, "
+                    f"B={current_belief.get('broken', 0):.2f}). "
+                    f"This may be a false positive. Take a moment to verify the "
+                    f"current trajectory is on track, then continue with confidence."
+                )
+            else:
+                summary = (
+                    f"Belief in {dominant} state elevated "
+                    f"(H={current_belief.get('healthy', 0):.2f}, "
+                    f"D={current_belief.get('degraded', 0):.2f}, "
+                    f"B={current_belief.get('broken', 0):.2f}). Verify."
+                )
 
         return CorrectiveAdvice(
             action_type=action_type,

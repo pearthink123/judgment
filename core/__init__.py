@@ -13,6 +13,7 @@ from .engine import (
     ACTION_CORRECT,
     ACTION_ESCALATE,
     ACTION_GATHER,
+    ACTION_REPLAN,
 )
 from .hawkes import (
     HawkesProcess,
@@ -50,6 +51,7 @@ from .corrective import (
     CORRECTIVE_ROLLBACK,
 )
 from .training import train_hmm, baum_welch
+from .config import EngineConfig
 from . import diagnostics
 
 __all__ = [
@@ -60,6 +62,7 @@ __all__ = [
     "ACTION_CORRECT",
     "ACTION_ESCALATE",
     "ACTION_GATHER",
+    "ACTION_REPLAN",
     # Hawkes
     "HawkesProcess",
     "HawkesEvent",
@@ -95,6 +98,8 @@ __all__ = [
     "CORRECTIVE_RETHINK",
     "CORRECTIVE_RETRY",
     "CORRECTIVE_ROLLBACK",
+    # Config
+    "EngineConfig",
     # Training
     "train_hmm",
     "baum_welch",

@@ -36,6 +36,8 @@ from .core import (
     HawkesProcess,
     CUSUMDetector,
     RewardConfig,
+    EngineConfig,
+    ACTION_CONTINUE, ACTION_CORRECT, ACTION_ESCALATE, ACTION_GATHER, ACTION_REPLAN,
     train_hmm,
 )
 
@@ -55,5 +57,8 @@ __all__ = [
     "HawkesProcess",
     "CUSUMDetector",
     "RewardConfig",
+    "EngineConfig",
+    "ACTION_CONTINUE", "ACTION_CORRECT", "ACTION_ESCALATE",
+    "ACTION_GATHER", "ACTION_REPLAN",
     "train_hmm",
 ]

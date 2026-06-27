@@ -8,12 +8,28 @@ Instead of passing 20 constructor params, create a config and pass it:
     engine = DecisionEngine.from_config(cfg)
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
 from .pomdp import RewardConfig
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _check_type(name: str, value, expected) -> None:
+    """Raise TypeError if value is not an instance of expected."""
+    if not isinstance(value, expected):
+        type_name = getattr(expected, "__name__", str(expected))
+        raise TypeError(
+            f"{name} must be {type_name}, got {type(value).__name__} ({value!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 @dataclass
 class EngineConfig:
     # ---- Solver selection ----
@@ -48,8 +64,83 @@ class EngineConfig:
     theta_degraded: float = 0.35
     theta_broken: float = 0.45
 
+    # ---- Anthropic alignment ----
+    anthropic_mode: bool = False      # enable all Anthropic-aligned features
+    cost_aware: bool = False          # track cumulative token cost estimates
+    enable_replan: bool = False       # allow "replan" action on plan deviation
+
     # ---- Misc ----
     seed: Optional[int] = None
+
+    def __post_init__(self):
+        """Validate field types and ranges.  Raises TypeError / ValueError."""
+        _MAX_ENTROPY = math.log(3)  # ~1.099 for uniform 3-state belief
+
+        # --- bool fields ---
+        for name in ("use_cusum", "use_hawkes", "use_hmm",
+                     "use_pomdp", "use_pomcp", "use_fast_pomcp",
+                     "use_corrective", "use_content_signals",
+                     "anthropic_mode", "cost_aware", "enable_replan"):
+            _check_type(name, getattr(self, name), bool)
+
+        # --- int fields ---
+        for name in ("pomcp_n_simulations", "pomcp_n_particles"):
+            _check_type(name, getattr(self, name), int)
+        if self.pomcp_n_simulations < 1:
+            raise ValueError(
+                f"pomcp_n_simulations must be >= 1, got {self.pomcp_n_simulations}"
+            )
+        if self.pomcp_n_particles < 1:
+            raise ValueError(
+                f"pomcp_n_particles must be >= 1, got {self.pomcp_n_particles}"
+            )
+
+        # --- float fields ---
+        for name in ("pomdp_resolution", "cusum_h", "cusum_gamma",
+                     "entropy_threshold", "hysteresis_margin",
+                     "theta_healthy", "theta_degraded", "theta_broken"):
+            _check_type(name, getattr(self, name), (int, float))
+
+        if not (0.0 < self.pomdp_resolution <= 1.0):
+            raise ValueError(
+                f"pomdp_resolution must be in (0, 1], got {self.pomdp_resolution}"
+            )
+
+        if self.cusum_h <= 0:
+            raise ValueError(f"cusum_h must be > 0, got {self.cusum_h}")
+
+        if not (0.0 <= self.cusum_gamma <= 1.0):
+            raise ValueError(
+                f"cusum_gamma must be in [0, 1], got {self.cusum_gamma}"
+            )
+
+        _max_entropy = math.log(3)
+        if not (0.0 <= self.entropy_threshold <= _max_entropy):
+            raise ValueError(
+                f"entropy_threshold must be in [0, {_max_entropy:.3f}], "
+                f"got {self.entropy_threshold}"
+            )
+
+        if not (0.0 <= self.hysteresis_margin <= 0.5):
+            raise ValueError(
+                f"hysteresis_margin must be in [0, 0.5], got {self.hysteresis_margin}"
+            )
+
+        # --- theta probabilities (must be 0-1) ---
+        for name in ("theta_healthy", "theta_degraded", "theta_broken"):
+            val = getattr(self, name)
+            if not (0.0 <= val <= 1.0):
+                raise ValueError(f"{name} must be in [0, 1], got {val}")
+
+        # --- seed ---
+        if self.seed is not None:
+            _check_type("seed", self.seed, int)
+
+        # --- reward ---
+        if self.reward is not None and not isinstance(self.reward, RewardConfig):
+            raise TypeError(
+                f"reward must be RewardConfig or None, got {type(self.reward).__name__}"
+            )
 
     @classmethod
     def preset(cls, name: str, **overrides) -> "EngineConfig":
@@ -76,8 +167,24 @@ class EngineConfig:
                 use_pomdp=False, use_pomcp=False, use_fast_pomcp=False,
                 use_corrective=False, use_content_signals=False,
             ),
+            "anthropic": cls(
+                use_fast_pomcp=True,
+                use_content_signals=True,
+                use_corrective=True,
+                cusum_h=4.0,
+                anthropic_mode=True,
+                cost_aware=True,
+                enable_replan=True,
+                reward=RewardConfig.preset("conservative"),
+            ),
         }
         cfg = presets.get(name, cls())
         for k, v in overrides.items():
+            if not hasattr(cfg, k):
+                raise ValueError(
+                    f"Unknown config field '{k}'. Available: {list(cls.__dataclass_fields__)}"
+                )
             setattr(cfg, k, v)
+        # Re-validate after overrides
+        cfg.__post_init__()
         return cfg
