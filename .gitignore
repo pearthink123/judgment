@@ -48,6 +48,9 @@ __pycache__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Development notes (local only)
+开发日志.md
+
 # Generated data
 scripts/eval_results.json
 scripts/benchmark_results.json
