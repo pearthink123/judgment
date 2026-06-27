@@ -35,6 +35,9 @@ dashboard = [
 llm = [
     "openai>=1.0",
 ]
+anthropic = [
+    "anthropic>=0.30",
+]
 dev = [
     "pytest",
     "ruff",

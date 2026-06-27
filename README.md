@@ -73,6 +73,29 @@ result, decision = my_step(state)
 if decision.action == "escalate": break
 ```
 
+## LLM providers
+
+```python
+from judgment import JudgmentHarness, LLMExecutor, AnthropicExecutor
+
+# OpenAI / DeepSeek / Groq / vLLM (OpenAI-compatible API)
+harness = JudgmentHarness(
+    executor=LLMExecutor(
+        model="groq/llama-4",     # or "deepseek-chat", "gpt-4o"
+        base_url="https://api.groq.com/openai/v1",  # ← set for non-OpenAI
+        api_key="...",
+    ),
+)
+
+# Anthropic (native SDK)
+harness = JudgmentHarness(
+    executor=AnthropicExecutor(
+        model="claude-sonnet-4-20250514",
+        api_key="...",
+    ),
+)
+```
+
 ## How it works
 
 ```

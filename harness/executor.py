@@ -3,8 +3,8 @@ LLM Executor — model-agnostic tool-calling interface.
 
 Supports:
   - SimulatedExecutor: for testing / demo (no API key needed)
-  - LLMExecutor: real API calls via OpenAI-compatible endpoint
-    (DeepSeek, Anthropic via proxy, OpenAI, local models)
+  - LLMExecutor: OpenAI-compatible API (DeepSeek, OpenAI, Groq, vLLM, etc.)
+  - AnthropicExecutor: native Anthropic SDK (Claude models)
 """
 
 from abc import ABC, abstractmethod
@@ -253,7 +253,164 @@ def default_progress_estimator(output: ExecutorOutput) -> float:
     """
     if output.tool_ok:
         if output.tool_result and len(output.tool_result) > 100:
-            return 0.08   # substantial output → some progress
-        return 0.04        # minimal output
+            return 0.08
+        return 0.04
     else:
-        return -0.03        # failure → slight regression
+        return -0.03
+
+
+# ---------------------------------------------------------------------------
+# Anthropic executor — native Anthropic SDK
+# ---------------------------------------------------------------------------
+class AnthropicExecutor(BaseExecutor):
+    """
+    Executor using the native Anthropic Python SDK.
+
+    Requires: pip install judgment[llm,anthropic]
+
+    Parameters
+    ----------
+    model : str — e.g. "claude-sonnet-4-20250514", "claude-opus-4-20250514".
+    api_key : str or None — if None, reads ANTHROPIC_API_KEY env var.
+    temperature : float.
+    max_tokens : int.
+    """
+
+    def __init__(
+        self,
+        model: str = "claude-sonnet-4-20250514",
+        api_key: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ):
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+        if api_key is None:
+            import os
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        self.api_key = api_key
+
+    def run_step(
+        self,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools: ToolRegistry,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> ExecutorOutput:
+        if self.api_key is None:
+            return ExecutorOutput(
+                text="",
+                tool_ok=False,
+                error_count_delta=1,
+                tool_result="[error] No API key. Set ANTHROPIC_API_KEY.",
+            )
+
+        try:
+            import anthropic
+        except ImportError:
+            return ExecutorOutput(
+                text="",
+                tool_ok=False,
+                error_count_delta=1,
+                tool_result="[error] anthropic package not installed. Run: pip install anthropic",
+            )
+
+        client = anthropic.Anthropic(api_key=self.api_key)
+
+        # Convert messages to Anthropic format: system is a top-level param
+        # Anthropic expects messages WITHOUT system role
+        anthropic_messages: List[Dict[str, Any]] = []
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            # Anthropic doesn't allow empty content in assistant messages
+            if not content:
+                content = "(no output)"
+            anthropic_messages.append({"role": role, "content": content})
+
+        # Convert tool schemas to Anthropic format
+        anthropic_tools = None
+        if tools.list_names():
+            anthropic_tools = _to_anthropic_tools(tools)
+
+        try:
+            kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "system": system_prompt,
+                "messages": anthropic_messages,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+            }
+            if anthropic_tools:
+                kwargs["tools"] = anthropic_tools
+
+            response = client.messages.create(**kwargs)
+        except Exception as e:
+            return ExecutorOutput(
+                text="",
+                tool_ok=False,
+                error_count_delta=1,
+                tool_result=f"[error] Anthropic API call failed: {e}",
+            )
+
+        # Parse response content blocks
+        text_parts: list[str] = []
+        tool_name = None
+        tool_input: Dict[str, Any] = {}
+        tool_use_id = None
+
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_name = block.name
+                tool_input = dict(block.input) if block.input else {}
+                tool_use_id = block.id
+
+        text = "\n".join(text_parts)
+
+        # Execute tool if one was called
+        if tool_name:
+            tool_result = tools.execute(tool_name, tool_input)
+            tool_ok = not tool_result.startswith("[error]") and not tool_result.startswith("[tool error]")
+            error_delta = 0 if tool_ok else 1
+            return ExecutorOutput(
+                text=text,
+                tool_ok=tool_ok,
+                tool_name=tool_name,
+                tool_result=tool_result,
+                error_count_delta=error_delta,
+            )
+
+        # Text-only response
+        return ExecutorOutput(
+            text=text,
+            tool_ok=True,
+            tool_name=None,
+            tool_result=text,
+            error_count_delta=0,
+        )
+
+
+def _to_anthropic_tools(tools: ToolRegistry) -> List[Dict[str, Any]]:
+    """Convert ToolRegistry schemas to Anthropic tool format."""
+    result: List[Dict[str, Any]] = []
+    for name in tools.list_names():
+        tool = tools.get(name)
+        if tool is None:
+            continue
+        props = tool.parameters.get("properties", {})
+        required = tool.parameters.get("required", [])
+        # Anthropic uses "input_schema", OpenAI uses "parameters"
+        result.append({
+            "name": name,
+            "description": tool.description,
+            "input_schema": {
+                "type": "object",
+                "properties": props,
+                "required": required,
+            },
+        })
+    return result

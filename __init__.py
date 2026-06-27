@@ -24,6 +24,7 @@ from .harness import (
     RunResult,
     SimulatedExecutor,
     LLMExecutor,
+    AnthropicExecutor,
     ToolRegistry,
     default_registry,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "RunResult",
     "SimulatedExecutor",
     "LLMExecutor",
+    "AnthropicExecutor",
     "ToolRegistry",
     "default_registry",
     # Core (power users)
